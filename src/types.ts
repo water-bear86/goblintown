@@ -236,12 +236,35 @@ export type ProviderPresetId =
 
 export type OutputFormat = "freeform" | "markdown" | "json";
 
+export interface ProviderRouteConfig {
+  preset: ProviderPresetId;
+  baseURL?: string;
+  apiKeyEnv?: string;
+  model?: string;
+  outputFormat?: OutputFormat;
+}
+
 export interface ProviderConfig {
   preset: ProviderPresetId;
   baseURL?: string;
   apiKeyEnv?: string;
   models?: Partial<Record<ModelSlot, string>>;
+  routes?: Partial<Record<ModelSlot, ProviderRouteConfig>>;
   outputFormat?: OutputFormat;
+}
+
+export interface WarrenPeer {
+  name: string;
+  url: string;
+  createdAt: string;
+  note?: string;
+}
+
+export interface CountryConfig {
+  /** Manual role owners by creature kind. Missing roles can auto-fall back to lead. */
+  roleOwners?: Partial<Record<CreatureKind, string>>;
+  /** When true, any unassigned role defaults to the lead for the run. */
+  autoAssignLeadExtras?: boolean;
 }
 
 export interface WarrenManifest {
@@ -254,4 +277,8 @@ export interface WarrenManifest {
   provider?: ProviderConfig;
   /** Optional shared secret for HMAC-authenticated federation. */
   peerSecret?: string;
+  /** Known peer Warrens in the same goblin-country. */
+  peers?: WarrenPeer[];
+  /** Team execution policy for distributed rites. */
+  country?: CountryConfig;
 }

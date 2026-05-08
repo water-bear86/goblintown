@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { constants as FS } from "node:fs";
 import { join } from "node:path";
+import { normalizeCountryConfig, normalizeWarrenPeers } from "./country.js";
 import { Hoard } from "./hoard.js";
 import { defaultProviderConfig, normalizeProviderConfig } from "./providers.js";
 import type { WarrenManifest } from "./types.js";
@@ -30,6 +31,8 @@ export async function initWarren(root: string): Promise<Warren> {
     defaultModelOgre: process.env.GOBLINTOWN_MODEL_OGRE ?? "gpt-5.5",
     defaultModelTroll: process.env.GOBLINTOWN_MODEL_TROLL ?? "gpt-5.4-mini",
     provider: defaultProviderConfig(),
+    peers: [],
+    country: normalizeCountryConfig(undefined),
   };
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
@@ -48,6 +51,8 @@ export async function loadWarren(cwd: string): Promise<Warren> {
     await readFile(manifestPath, "utf8"),
   ) as WarrenManifest;
   manifest.provider = normalizeProviderConfig(manifest.provider);
+  manifest.peers = normalizeWarrenPeers(manifest.peers);
+  manifest.country = normalizeCountryConfig(manifest.country);
   const hoard = new Hoard(join(root, WARREN_DIRNAME, "hoard"));
   // Defensive: ensure all hoard subdirs exist (idempotent). Warrens initialized
   // before later subdirs were added (e.g. .goblintown/hoard/artifacts) get
@@ -58,6 +63,8 @@ export async function loadWarren(cwd: string): Promise<Warren> {
 
 export async function saveWarrenManifest(warren: Warren): Promise<void> {
   warren.manifest.provider = normalizeProviderConfig(warren.manifest.provider);
+  warren.manifest.peers = normalizeWarrenPeers(warren.manifest.peers);
+  warren.manifest.country = normalizeCountryConfig(warren.manifest.country);
   await writeFile(warren.manifestPath, JSON.stringify(warren.manifest, null, 2), "utf8");
 }
 

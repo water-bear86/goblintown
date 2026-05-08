@@ -1,5 +1,14 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import express, { type Request, type Response } from "express";
+import {
+  MAX_PEERS,
+  MAX_TEAM_MEMBERS,
+  normalizeCountryConfig,
+  normalizeWarrenPeer,
+  resolveRoleOwners,
+} from "./country.js";
 import { verifyInbox } from "./federation.js";
 import { performRite, type RiteStep } from "./rite.js";
 import { loadRewardPlugin } from "./reward-plugin.js";
@@ -183,6 +192,51 @@ export async function serve(opts: ServeOptions): Promise<void> {
     warren.manifest.provider = config;
     await saveWarrenManifest(warren);
     res.json(providerPayload(warren));
+  });
+  app.get("/api/country", (_req, res) => {
+    res.json(countryPayload(warren));
+  });
+  app.post("/api/country", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const peersRaw = Array.isArray(body.peers)
+      ? body.peers
+      : (warren.manifest.peers ?? []);
+    if (Array.isArray(peersRaw) && peersRaw.length > MAX_PEERS) {
+      res
+        .status(400)
+        .json({ error: `team full: max ${MAX_TEAM_MEMBERS} members (lead + ${MAX_PEERS} peers)` });
+      return;
+    }
+    const peers = peersRaw
+      .map((p) => normalizeWarrenPeer(p))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .slice(0, MAX_PEERS);
+    const country = normalizeCountryConfig({
+      roleOwners: body.roleOwners,
+      autoAssignLeadExtras: body.autoAssignLeadExtras,
+    });
+    warren.manifest.peers = peers;
+    warren.manifest.country = country;
+    await saveWarrenManifest(warren);
+    res.json(countryPayload(warren));
+  });
+  app.post("/api/cli", async (req, res) => {
+    const body = (req.body ?? {}) as { line?: unknown };
+    if (typeof body.line !== "string" || body.line.trim().length === 0) {
+      res.status(400).json({ error: "line is required" });
+      return;
+    }
+    const args = parseCliLine(body.line.trim());
+    if (args.length === 0) {
+      res.status(400).json({ error: "empty command" });
+      return;
+    }
+    if (args[0] === "serve") {
+      res.status(400).json({ error: "`serve` is already running in this UI session." });
+      return;
+    }
+    const result = await runCliLine(warren.root, args);
+    res.json(result);
   });
   app.post("/api/inbox", async (req, res) => receiveInboxOverHttp(warren, req, res));
 
@@ -641,6 +695,96 @@ function providerPayload(warren: Warren): {
   };
 }
 
+function countryPayload(warren: Warren): {
+  lead: string;
+  maxMembers: number;
+  maxPeers: number;
+  roles: CreatureKind[];
+  members: Array<{ name: string; url?: string; lead: boolean }>;
+  peers: Array<{ name: string; url: string; note?: string }>;
+  config: {
+    autoAssignLeadExtras: boolean;
+    roleOwners: Partial<Record<CreatureKind, string>>;
+  };
+  resolvedRoleOwners: Record<CreatureKind, string>;
+} {
+  const lead = warren.manifest.name;
+  const peers = (warren.manifest.peers ?? []).map((p) => ({
+    name: p.name,
+    url: p.url,
+    ...(p.note ? { note: p.note } : {}),
+  }));
+  const members = [
+    { name: lead, lead: true },
+    ...peers.map((p) => ({ name: p.name, url: p.url, lead: false })),
+  ];
+  const config = normalizeCountryConfig(warren.manifest.country);
+  const memberNames = members.map((m) => m.name);
+  return {
+    lead,
+    maxMembers: MAX_TEAM_MEMBERS,
+    maxPeers: MAX_PEERS,
+    roles: [...CREATURE_KINDS],
+    members,
+    peers,
+    config: {
+      autoAssignLeadExtras: config.autoAssignLeadExtras !== false,
+      roleOwners: config.roleOwners ?? {},
+    },
+    resolvedRoleOwners: resolveRoleOwners(config, memberNames, lead),
+  };
+}
+
+function parseCliLine(line: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|`([^`\\]*(?:\\.[^`\\]*)*)`|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line))) {
+    const raw = m[1] ?? m[2] ?? m[3] ?? m[4] ?? "";
+    out.push(raw.replace(/\\(["'`\\])/g, "$1"));
+  }
+  return out;
+}
+
+async function runCliLine(
+  cwd: string,
+  args: string[],
+): Promise<{ ok: boolean; code: number; stdout: string; stderr: string; command: string }> {
+  const cliPath = join(cwd, "dist", "cli.js");
+  const command = ["node", cliPath, ...args].join(" ");
+  return await new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+      if (stdout.length > 500_000) stdout = stdout.slice(-500_000);
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+      if (stderr.length > 200_000) stderr = stderr.slice(-200_000);
+    });
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, 8 * 60_000);
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      const exitCode = typeof code === "number" ? code : 1;
+      resolve({
+        ok: exitCode === 0,
+        code: exitCode,
+        stdout,
+        stderr,
+        command,
+      });
+    });
+  });
+}
+
 
 async function renderHome(
   warren: Warren,
@@ -1084,7 +1228,7 @@ function tankHtml(
     min-height: 100vh; padding: 1rem;
   }
   .warren {
-    width: min(1200px, 97vw);
+    width: min(1400px, 98vw);
     height: min(780px, 94vh);
     background: var(--bg-deep);
     border: 2px solid var(--line);
@@ -1178,6 +1322,205 @@ function tankHtml(
     text-transform: uppercase;
   }
   .provider-actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; }
+  .country-chip {
+    border: 1px solid var(--line);
+    background: var(--bg-deep);
+    color: var(--fg);
+    padding: 0.18rem 0.55rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .country-chip:hover { border-color: var(--accent); color: var(--accent-hot); }
+  .country-popover {
+    position: absolute;
+    right: 10.4rem;
+    top: 2.1rem;
+    z-index: 30;
+    width: min(860px, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
+    overflow: auto;
+    background: rgba(8, 11, 7, 0.98);
+    border: 1px solid var(--accent);
+    box-shadow: 0 12px 42px rgba(0,0,0,0.6);
+    padding: 0.9rem 1rem;
+    display: none;
+  }
+  .country-popover.open { display: block; }
+  .country-popover h3 {
+    margin: 0 0 0.55rem;
+    font-size: 0.76rem;
+    color: var(--fg-bright);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .country-subtle { color: var(--muted); font-size: 0.74rem; margin: 0 0 0.65rem; }
+  .country-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 0.85rem;
+  }
+  .country-pane {
+    border: 1px solid var(--line);
+    background: rgba(12,16,10,0.75);
+    padding: 0.65rem;
+  }
+  .country-pane h4 {
+    margin: 0 0 0.55rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-bright);
+  }
+  .country-row {
+    display: flex;
+    gap: 0.45rem;
+    margin-bottom: 0.42rem;
+  }
+  .country-row input {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    padding: 0.38rem 0.45rem;
+    font-family: inherit;
+    font-size: 0.76rem;
+  }
+  .country-row input:focus { outline: none; border-color: var(--accent); }
+  .country-row input[name="country-peer-name"] { width: 6.5rem; }
+  .country-row input[name="country-peer-url"] { flex: 1; min-width: 0; }
+  .country-list {
+    max-height: 180px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    background: rgba(6,9,5,0.7);
+  }
+  .country-member {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.45rem;
+    align-items: center;
+    padding: 0.35rem 0.45rem;
+    border-bottom: 1px solid rgba(43,60,35,0.55);
+    font-size: 0.74rem;
+  }
+  .country-member:last-child { border-bottom: 0; }
+  .country-member .lead { color: var(--accent); font-size: 0.64rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .country-role-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.72rem;
+  }
+  .country-role-table th,
+  .country-role-table td {
+    border: 1px solid rgba(43,60,35,0.7);
+    padding: 0.35rem 0.3rem;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .country-role-table th:first-child,
+  .country-role-table td:first-child {
+    text-align: left;
+    width: 6.3rem;
+    color: var(--fg-bright);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .country-role-table th.member-lead {
+    color: var(--accent-hot);
+  }
+  .country-role-table input[type="checkbox"] {
+    transform: scale(0.95);
+    accent-color: #b6f37a;
+  }
+  .country-actions { display: flex; gap: 0.6rem; margin-top: 0.75rem; align-items: center; }
+  .country-status { color: var(--muted); font-size: 0.72rem; min-height: 1.05rem; }
+  .country-popover .check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.74rem;
+    color: var(--fg);
+  }
+
+  .workarea {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ops-sidebar {
+    border-right: 1px solid var(--line);
+    background: rgba(8, 12, 8, 0.95);
+    padding: 0.7rem;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    gap: 0.6rem;
+  }
+  .ops-sidebar h3 {
+    margin: 0;
+    font-size: 0.74rem;
+    color: var(--fg-bright);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .ops-subtle {
+    color: var(--muted);
+    font-size: 0.7rem;
+    line-height: 1.35;
+  }
+  .ops-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.4rem;
+  }
+  .ops-input, .ops-select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.42rem 0.5rem;
+    font-family: inherit;
+    font-size: 0.76rem;
+  }
+  .ops-input:focus, .ops-select:focus { outline: none; border-color: var(--accent); }
+  .ops-presets {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.3rem;
+  }
+  .ops-presets button {
+    font-size: 0.66rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.35rem 0.4rem;
+    border: 1px solid var(--line);
+    color: var(--fg);
+    background: var(--bg-deep);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ops-presets button:hover { border-color: var(--accent); color: var(--accent-hot); }
+  .ops-output {
+    min-height: 0;
+    flex: 1;
+    border: 1px solid var(--line);
+    background: rgba(5,8,5,0.85);
+    padding: 0.5rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--fg);
+  }
+  .ops-output .err { color: var(--fail); }
+  .ops-output .ok { color: var(--pass); }
 
   .tank {
     position: relative; overflow: hidden;
@@ -1659,6 +2002,7 @@ function tankHtml(
     <span class="stat"><b id="stat-rites">${riteCount}</b> rites</span>
     <span class="stat">drift <b id="stat-drift">${drift.toFixed(3)}</b></span>
     <span class="grow"></span>
+    <button class="country-chip" id="country-chip" type="button">Team ▾</button>
     <button class="provider-chip" id="provider-chip" type="button">API ▾</button>
     <span class="tier" id="tier-display">tier 0 · empty plot</span>
     <span class="clock" id="clock">idle</span>
@@ -1694,6 +2038,65 @@ function tankHtml(
       <button class="btn" type="button" id="provider-cancel">Close</button>
     </div>
   </div>
+
+  <div class="country-popover" id="country-popover">
+    <h3>Goblin-Country Team</h3>
+    <p class="country-subtle" id="country-summary">Loading team...</p>
+    <div class="country-grid">
+      <div class="country-pane">
+        <h4>Members</h4>
+        <div class="country-row">
+          <input name="country-peer-name" id="country-peer-name" placeholder="name">
+          <input name="country-peer-url" id="country-peer-url" placeholder="http://host:7777">
+        </div>
+        <div class="country-actions" style="margin-top:0;">
+          <button class="btn" type="button" id="country-add-peer">Add Peer</button>
+        </div>
+        <div class="country-list" id="country-members"></div>
+      </div>
+      <div class="country-pane">
+        <h4>Role Assignment</h4>
+        <p class="country-subtle">Assign each rite role to one member. Unassigned roles can default to lead.</p>
+        <table class="country-role-table" id="country-role-table"></table>
+        <label class="check" style="margin-top:0.6rem;">
+          <input type="checkbox" id="country-auto-lead" checked>
+          Auto-assign unclaimed roles to lead
+        </label>
+      </div>
+    </div>
+    <div class="country-actions">
+      <button class="btn primary" type="button" id="country-save">Save Team</button>
+      <button class="btn" type="button" id="country-cancel">Close</button>
+      <span class="country-status" id="country-status"></span>
+    </div>
+  </div>
+
+  <div class="workarea">
+  <aside class="ops-sidebar" id="ops-sidebar">
+    <h3>Command Sidebar</h3>
+    <div class="ops-subtle">Run any Goblintown CLI command in-app. Use full syntax in the input line.</div>
+    <div class="ops-row">
+      <input class="ops-input" id="ops-line" placeholder='e.g. rite "Refactor planner" --pack 3 --remember'>
+      <button class="btn primary" id="ops-run" type="button">Run</button>
+    </div>
+    <div class="ops-presets" id="ops-presets">
+      <button type="button" data-line='summon goblin --task "Quick analysis"'>summon</button>
+      <button type="button" data-line='scavenge --task "What changed?" --scan "src/**/*.ts"'>scavenge</button>
+      <button type="button" data-line='quest "Investigate bug" --pack 3'>quest</button>
+      <button type="button" data-line='rite "Investigate bug" --pack 3 --remember'>rite</button>
+      <button type="button" data-line='plan "Ship feature safely" --max-nodes 6 --max-replan 2'>plan</button>
+      <button type="button" data-line='hoard --limit 20'>hoard</button>
+      <button type="button" data-line='drift'>drift</button>
+      <button type="button" data-line='inbox'>inbox</button>
+      <button type="button" data-line='outbox'>outbox</button>
+      <button type="button" data-line='route'>route</button>
+      <button type="button" data-line='country peer ls'>country peers</button>
+      <button type="button" data-line='country run --task "Cross-check this plan" --all'>country run</button>
+      <button type="button" data-line='fold --threshold 30'>fold</button>
+      <button type="button" data-line='reset --all'>reset</button>
+    </div>
+    <div class="ops-output" id="ops-output">ready</div>
+  </aside>
 
   <div class="tank" id="tank">
 
@@ -1860,6 +2263,7 @@ function tankHtml(
       </form>
     </div>
   </div>
+  </div>
 
   <div class="ticker" id="ticker">
     <span class="dot">●</span> <span id="ticker-text">idle</span>
@@ -1884,10 +2288,70 @@ const tickerText = $("ticker-text");
 const goblinPile = $("goblin-pile");
 const bubbleLayer = $("bubble-layer");
 const warren = $("warren");
+const opsLine = $("ops-line");
+const opsRun = $("ops-run");
+const opsOutput = $("ops-output");
 
 const rand  = (lo, hi) => lo + Math.random() * (hi - lo);
 const irand = (lo, hi) => Math.floor(rand(lo, hi + 1));
 const pick  = (arr)    => arr[Math.floor(Math.random() * arr.length)];
+
+function renderOpsResult(result) {
+  const ok = result.ok ? "ok" : "error";
+  const header = "[" + ok + "] " + result.command + " (exit " + result.code + ")";
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+  let text = header;
+  if (stdout) text += "\\n\\n" + stdout;
+  if (stderr) text += "\\n\\n[stderr]\\n" + stderr;
+  opsOutput.textContent = text;
+  opsOutput.classList.toggle("err", !result.ok);
+  opsOutput.classList.toggle("ok", !!result.ok);
+}
+
+async function runOpsLine() {
+  const line = (opsLine.value || "").trim();
+  if (!line) return;
+  opsOutput.textContent = "running: " + line;
+  opsRun.disabled = true;
+  try {
+    const r = await fetch("/api/cli", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      opsOutput.textContent = "error: " + (payload.error || "command failed");
+      opsOutput.classList.add("err");
+      opsOutput.classList.remove("ok");
+      return;
+    }
+    renderOpsResult(payload);
+    setTicker("command: " + line, true);
+    setTimeout(() => { refreshStats(); }, 350);
+  } catch (err) {
+    opsOutput.textContent = "error: " + (err.message || err);
+    opsOutput.classList.add("err");
+    opsOutput.classList.remove("ok");
+  } finally {
+    opsRun.disabled = false;
+  }
+}
+
+opsRun.onclick = runOpsLine;
+opsLine.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runOpsLine();
+  }
+});
+$("ops-presets").querySelectorAll("button[data-line]").forEach((btn) => {
+  btn.onclick = () => {
+    opsLine.value = btn.getAttribute("data-line") || "";
+    runOpsLine();
+  };
+});
 
 /* Town tier from real warren stats */
 function tierOf(rites) {
@@ -1994,6 +2458,7 @@ providerPreset.onchange = () => {
   renderProviderModels(preset.models || {});
 };
 providerChip.onclick = () => {
+  countryPopover.classList.remove("open");
   providerPopover.classList.toggle("open");
 };
 $("provider-cancel").onclick = () => providerPopover.classList.remove("open");
@@ -2026,6 +2491,184 @@ $("provider-save").onclick = async () => {
   }
 };
 loadProviderMenu();
+
+/* Country / team menu */
+let countryData = null;
+let countryPeers = [];
+let countryRoles = [];
+let countryMembers = [];
+let countryMaxMembers = 6;
+let countryMaxPeers = 5;
+const countryChip = $("country-chip");
+const countryPopover = $("country-popover");
+const countrySummary = $("country-summary");
+const countryMembersEl = $("country-members");
+const countryRoleTable = $("country-role-table");
+const countryAutoLead = $("country-auto-lead");
+const countryStatus = $("country-status");
+
+function canonicalName(s) { return (s || "").trim().toLowerCase(); }
+
+function renderCountryMembers() {
+  countryMembersEl.innerHTML = "";
+  for (const m of countryMembers) {
+    const row = document.createElement("div");
+    row.className = "country-member";
+    row.innerHTML =
+      '<span>' + escHtml(m.name) + (m.url ? ' <span class="muted">(' + escHtml(m.url) + ')</span>' : "") + "</span>" +
+      '<span class="lead">' + (m.lead ? "lead" : "peer") + "</span>" +
+      (m.lead ? '<span></span>' : '<button class="btn" data-rm-peer="' + escHtml(m.name) + '" type="button">Remove</button>');
+    countryMembersEl.appendChild(row);
+  }
+  countryMembersEl.querySelectorAll("button[data-rm-peer]").forEach((btn) => {
+    btn.onclick = () => {
+      const name = btn.getAttribute("data-rm-peer");
+      countryPeers = countryPeers.filter((p) => canonicalName(p.name) !== canonicalName(name));
+      rebuildCountryMembers();
+      renderCountryRoleTable();
+      countryStatus.textContent = "Peer removed. Save to persist.";
+    };
+  });
+}
+
+function rebuildCountryMembers() {
+  const lead = countryData?.lead || "lead";
+  countryMembers = [{ name: lead, lead: true }];
+  countryPeers.forEach((p) => countryMembers.push({ name: p.name, url: p.url, lead: false }));
+  const count = countryMembers.length;
+  countrySummary.textContent =
+    count + "/" + countryMaxMembers + " members. Roles: " + countryRoles.length +
+    ". Unassigned roles default to lead when auto-assign is enabled.";
+  countryChip.textContent = "Team " + count + "/" + countryMaxMembers + " ▾";
+}
+
+function escHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function currentRoleOwners() {
+  const owners = {};
+  countryRoles.forEach((role) => {
+    const checked = countryRoleTable.querySelector('input[type="checkbox"][data-role="' + role + '"]:checked');
+    if (checked) owners[role] = checked.getAttribute("data-member");
+  });
+  return owners;
+}
+
+function renderCountryRoleTable() {
+  const owners = countryData?.config?.roleOwners || {};
+  let html = "<thead><tr><th>Role</th>";
+  for (const m of countryMembers) {
+    html += '<th class="' + (m.lead ? "member-lead" : "") + '">' + escHtml(m.name) + "</th>";
+  }
+  html += "</tr></thead><tbody>";
+  for (const role of countryRoles) {
+    html += "<tr><td>" + escHtml(role) + "</td>";
+    for (const m of countryMembers) {
+      const checked = canonicalName(owners[role]) === canonicalName(m.name);
+      html += '<td><input type="checkbox" data-role="' + escHtml(role) + '" data-member="' + escHtml(m.name) + '"' + (checked ? " checked" : "") + "></td>";
+    }
+    html += "</tr>";
+  }
+  html += "</tbody>";
+  countryRoleTable.innerHTML = html;
+  countryRoleTable.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.onchange = () => {
+      if (!cb.checked) return;
+      const role = cb.getAttribute("data-role");
+      countryRoleTable
+        .querySelectorAll('input[type="checkbox"][data-role="' + role + '"]')
+        .forEach((other) => {
+          if (other !== cb) other.checked = false;
+        });
+    };
+  });
+}
+
+function applyCountryPayload(payload) {
+  countryData = payload || {};
+  countryPeers = [...(payload.peers || [])];
+  countryRoles = payload.roles || [];
+  countryMaxMembers = payload.maxMembers || 6;
+  countryMaxPeers = payload.maxPeers || (countryMaxMembers - 1);
+  countryAutoLead.checked = payload.config?.autoAssignLeadExtras !== false;
+  rebuildCountryMembers();
+  renderCountryMembers();
+  renderCountryRoleTable();
+  countryStatus.textContent = "";
+}
+
+async function loadCountryMenu() {
+  try {
+    const r = await fetch("/api/country");
+    if (!r.ok) throw new Error(await r.text());
+    applyCountryPayload(await r.json());
+  } catch (err) {
+    countrySummary.textContent = "Team menu unavailable.";
+    countryStatus.textContent = String(err && err.message ? err.message : err);
+  }
+}
+
+countryChip.onclick = () => {
+  providerPopover.classList.remove("open");
+  countryPopover.classList.toggle("open");
+};
+$("country-cancel").onclick = () => countryPopover.classList.remove("open");
+$("country-add-peer").onclick = () => {
+  const nameInput = $("country-peer-name");
+  const urlInput = $("country-peer-url");
+  const name = (nameInput.value || "").trim();
+  const url = (urlInput.value || "").trim();
+  if (!name || !url) {
+    countryStatus.textContent = "Name and URL are required.";
+    return;
+  }
+  if (countryPeers.length >= countryMaxPeers) {
+    countryStatus.textContent = "Team full: max " + countryMaxMembers + " members.";
+    return;
+  }
+  const dupe = countryPeers.some(
+    (p) => canonicalName(p.name) === canonicalName(name) || p.url === url,
+  );
+  if (dupe) {
+    countryStatus.textContent = "Peer already exists.";
+    return;
+  }
+  countryPeers.push({ name, url });
+  nameInput.value = "";
+  urlInput.value = "";
+  rebuildCountryMembers();
+  renderCountryMembers();
+  renderCountryRoleTable();
+  countryStatus.textContent = "Peer added. Save to persist.";
+};
+$("country-save").onclick = async () => {
+  countryStatus.textContent = "Saving...";
+  const payload = {
+    peers: countryPeers,
+    autoAssignLeadExtras: countryAutoLead.checked,
+    roleOwners: currentRoleOwners(),
+  };
+  try {
+    const r = await fetch("/api/country", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    applyCountryPayload(await r.json());
+    countryPopover.classList.remove("open");
+    setTicker("team policy saved");
+  } catch (err) {
+    countryStatus.textContent = "Save failed: " + (err.message || err);
+  }
+};
+
+loadCountryMenu();
 
 /* Bubbles */
 const MAX_BUBBLES = 3;

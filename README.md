@@ -289,6 +289,18 @@ goblintown send --to ../other-warren    --loot <id>
 goblintown send --to https://other:7777 --loot <id>
 goblintown inbox
 goblintown outbox
+
+# per-creature provider routing
+goblintown route
+goblintown route set goblin --preset ollama --model gemma3:27b
+goblintown route set ogre --preset openai --model gpt-5.5
+goblintown route clear goblin
+
+# goblin-country collaboration
+goblintown country peer add --name alpha --url http://localhost:7777
+goblintown country peer add --name beta  --url http://localhost:8888
+goblintown country peer ls
+goblintown country run --task "Audit this migration plan" --all --pack 2
 ```
 
 ## Models
@@ -316,6 +328,7 @@ Tank top bar. It saves non-secret provider settings to `.goblintown/warren.json`
 - base URL
 - API key environment variable name
 - per-creature model names
+- per-creature provider routes (optional)
 - default output format: `freeform`, `markdown`, or `json`
 
 API keys are never written to `warren.json`. Set the key in your shell with the
@@ -347,6 +360,21 @@ format-repair call if the first answer is malformed.
 The menu is intentionally an OpenAI-compatible routing layer, not a new
 orchestration engine. Changing providers changes model behavior and quality, but
 the Rite pipeline itself remains the same.
+
+### Per-creature provider routes
+
+Provider routes let you run different creatures against different backends:
+
+```bash
+goblintown route set goblin --preset ollama --model gemma3:27b
+goblintown route set troll  --preset openrouter --model openai/gpt-4o-mini
+goblintown route set ogre   --preset openai --model gpt-5.5
+goblintown route
+```
+
+Routes are slot-specific (`goblin`, `gremlin`, `raccoon`, `troll`, `ogre`,
+`pigeon`, `scribe`, `embedding`) and override the global provider for that
+slot only.
 
 ### Local runtime notes (LM Studio/Ollama)
 
@@ -435,6 +463,25 @@ The result is clamped to `[0, 1]`.
 (`--to <path>`) or HTTP (`--to https://...`). Messages carry a content
 signature; if both Warrens set `peerSecret` in their manifests, an HMAC tag
 is also required.
+
+## Goblin-Country
+
+Goblin-Country is a light collaboration layer across multiple Goblintown
+servers. Register peers in `warren.json`, then dispatch one rite task to many
+peers in parallel:
+
+```bash
+goblintown country peer add --name alpha --url http://localhost:7777
+goblintown country peer add --name beta --url http://localhost:8888
+goblintown country run --task "Find schema drift risks" --all --pack 2
+```
+
+`country run` starts `/api/rite` on each peer and polls `/api/runs/:runId`
+until each run completes (or times out).
+
+Team cap is fixed at six total members (lead + up to five peers), matching the
+six rite creature roles. In the Tank UI, Team settings expose a role matrix:
+unassigned roles can auto-fall back to the lead.
 
 ## Browser-driven rites (SSE)
 

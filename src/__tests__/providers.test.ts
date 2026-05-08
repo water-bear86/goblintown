@@ -8,6 +8,7 @@ import {
   PROVIDER_PRESETS,
   normalizeProviderConfig,
   resolveModelForSlot,
+  resolveProviderRuntimeForSlot,
   resolveProviderRuntime,
 } from "../providers.js";
 import { initWarren, loadWarren } from "../warren.js";
@@ -122,6 +123,29 @@ describe("provider presets", () => {
     assert.equal(resolveModelForSlot("goblin", "gpt-5.4-mini", cfg), "deepseek-v4-flash");
     assert.equal(resolveModelForSlot("ogre", "gpt-5.5", cfg), "deepseek-v4-pro");
     assert.ok(MODEL_SLOTS.includes("scribe"));
+  });
+
+  it("supports per-slot provider routes", () => {
+    const cfg = normalizeProviderConfig({
+      preset: "openai",
+      models: { goblin: "gpt-5.4-mini" },
+      routes: {
+        goblin: {
+          preset: "ollama",
+          model: "gemma3:27b",
+          baseURL: "http://localhost:11434/v1",
+        },
+      },
+    });
+    const goblinRuntime = resolveProviderRuntimeForSlot("goblin", cfg, {});
+    assert.equal(goblinRuntime.id, "ollama");
+    assert.equal(goblinRuntime.baseURL, "http://localhost:11434/v1");
+    assert.equal(
+      resolveModelForSlot("goblin", "gpt-5.4-mini", cfg, {}),
+      "gemma3:27b",
+    );
+    const ogreRuntime = resolveProviderRuntimeForSlot("ogre", cfg, {});
+    assert.equal(ogreRuntime.id, "openai");
   });
 });
 
