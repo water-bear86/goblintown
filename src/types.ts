@@ -121,6 +121,48 @@ export interface OutboxRecord {
   sentAt: number;
 }
 
+export interface FriendRecord {
+  id: string;
+  name: string;
+  url: string;
+  publicKey: string;
+  createdAt: string;
+  note?: string;
+}
+
+export interface FriendRequest {
+  id: string;
+  fromName: string;
+  fromUrl: string;
+  fromPublicKey: string;
+  toName: string;
+  toUrl: string;
+  createdAt: string;
+  signature: string;
+}
+
+export interface DirectMessage {
+  id: string;
+  threadId: string;
+  fromName: string;
+  fromUrl: string;
+  fromPublicKey: string;
+  toName: string;
+  toUrl: string;
+  body: string;
+  createdAt: string;
+  signature: string;
+  readAt?: string;
+}
+
+export interface DirectMessageThread {
+  id: string;
+  participantA: string;
+  participantB: string;
+  updatedAt: string;
+  lastMessagePreview: string;
+}
+
 /**
  * An Artifact is a typed, structured summary of what a Rite established.
  * Stored separately from raw Loot so that future rites can load just the
@@ -261,10 +303,44 @@ export interface WarrenPeer {
 }
 
 export interface CountryConfig {
+  /** Enable collaborative country mode for rite/plan execution preflights. */
+  enabled?: boolean;
+  /** Stable country id (shared by all members). */
+  countryId?: string;
+  /** Human-readable country name. */
+  countryName?: string;
+  /** Short join/search code (for example: A7K2Q). */
+  countryCode?: string;
+  /** Public key of country lead used to verify membership operations. */
+  leaderPublicKey?: string;
+  /** If true, this country is discoverable for join requests. */
+  discoverable?: boolean;
   /** Manual role owners by creature kind. Missing roles can auto-fall back to lead. */
   roleOwners?: Partial<Record<CreatureKind, string>>;
   /** When true, any unassigned role defaults to the lead for the run. */
   autoAssignLeadExtras?: boolean;
+  /** Pending join requests awaiting lead approval. */
+  pendingJoinRequests?: CountryJoinRequest[];
+  /** Rites/plans queued while team-members are offline. */
+  riteQueue?: CountryQueuedRite[];
+}
+
+export interface CountryJoinRequest {
+  id: string;
+  countryId: string;
+  countryCode: string;
+  fromName: string;
+  fromUrl: string;
+  fromPublicKey: string;
+  createdAt: string;
+  signature: string;
+}
+
+export interface CountryQueuedRite {
+  id: string;
+  mode: "rite" | "plan";
+  task: string;
+  createdAt: number;
 }
 
 export interface WarrenManifest {

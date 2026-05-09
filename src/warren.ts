@@ -1,7 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { constants as FS } from "node:fs";
 import { join } from "node:path";
-import { normalizeCountryConfig, normalizeWarrenPeers } from "./country.js";
+import {
+  makeCountryName,
+  makeCountryCode,
+  normalizeCountryConfig,
+  normalizeWarrenPeers,
+} from "./country.js";
 import { Hoard } from "./hoard.js";
 import { defaultProviderConfig, normalizeProviderConfig } from "./providers.js";
 import type { WarrenManifest } from "./types.js";
@@ -32,7 +38,13 @@ export async function initWarren(root: string): Promise<Warren> {
     defaultModelTroll: process.env.GOBLINTOWN_MODEL_TROLL ?? "gpt-5.4-mini",
     provider: defaultProviderConfig(),
     peers: [],
-    country: normalizeCountryConfig(undefined),
+    country: normalizeCountryConfig({
+      enabled: false,
+      countryId: randomUUID().slice(0, 12),
+      countryName: makeCountryName(),
+      countryCode: makeCountryCode(),
+      discoverable: true,
+    }),
   };
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 

@@ -2,9 +2,14 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   MAX_PEERS,
+  makeCountryName,
+  makeCountryCode,
+  normalizeCountryCode,
+  normalizeCountryConfig,
   normalizeWarrenPeer,
   normalizeWarrenPeers,
   resolveRoleOwners,
+  sampleOpenCountries,
   selectPeers,
 } from "../country.js";
 
@@ -62,5 +67,52 @@ describe("country peers", () => {
     assert.equal(resolved.goblin, "alice");
     assert.equal(resolved.ogre, "lead");
     assert.equal(resolved.pigeon, "lead");
+  });
+
+  it("normalizes country mode config metadata", () => {
+    const cfg = normalizeCountryConfig({
+      enabled: true,
+      countryId: "alpha_123",
+      countryName: "Amber Hollow",
+      countryCode: "ab12c",
+      discoverable: true,
+      pendingJoinRequests: [
+        {
+          id: "req1",
+          countryId: "alpha_123",
+          countryCode: "AB12C",
+          fromName: "peer1",
+          fromUrl: "http://localhost:7778",
+          fromPublicKey: "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----",
+          createdAt: new Date().toISOString(),
+          signature: "sig",
+        },
+      ],
+    });
+    assert.equal(cfg.enabled, true);
+    assert.equal(cfg.countryName, "Amber Hollow");
+    assert.equal(cfg.countryCode, "AB12C");
+    assert.equal((cfg.pendingJoinRequests ?? []).length, 1);
+  });
+
+  it("generates valid country code and filters open-country sample", () => {
+    const code = makeCountryCode(12345);
+    assert.ok(normalizeCountryCode(code));
+    const sample = sampleOpenCountries([
+      { memberCount: 1, id: "a" },
+      { memberCount: 2, id: "b" },
+      { memberCount: 3, id: "c" },
+      { memberCount: 4, id: "d" },
+    ]);
+    assert.equal(sample.some((x) => x.memberCount > 3), false);
+  });
+
+  it("generates probabilistically unique country names against existing set", () => {
+    const taken = new Set<string>();
+    for (let i = 0; i < 120; i++) {
+      const name = makeCountryName(taken, 1000 + i);
+      assert.equal(taken.has(name.toLowerCase()), false);
+      taken.add(name.toLowerCase());
+    }
   });
 });

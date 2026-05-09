@@ -301,6 +301,7 @@ goblintown country peer add --name alpha --url http://localhost:7777
 goblintown country peer add --name beta  --url http://localhost:8888
 goblintown country peer ls
 goblintown country run --task "Audit this migration plan" --all --pack 2
+# (UI flow: Country top-bar menu supports code-based join/discovery + approvals)
 ```
 
 ## Models
@@ -491,6 +492,27 @@ Team cap is fixed at six total members (lead + up to five peers), matching the
 six rite creature roles. In the Tank UI, Team settings expose a role matrix:
 unassigned roles can auto-fall back to the lead.
 
+### Country lifecycle in the Tank UI
+
+- A country identity is auto-created per Warren (random country name + code).
+- Open **Country ▾** in the top bar, enable **Country Mode**, then **Save Team**
+  to publish your country for discovery.
+- **Join** tab supports:
+  - search by country code, and
+  - random open-country sampling (up to 10 countries with 3 or fewer members).
+- Join requests are approved/denied by the lead in **Pending Join Requests**.
+- **Team** tab controls per-role ownership (goblin/gremlin/raccoon/troll/ogre/pigeon)
+  with optional auto-assignment of unclaimed roles to the lead.
+- When country mode is enabled, rites/plans require all teammates online;
+  otherwise requests are queued until members are reachable.
+
+### Friends & Mail
+
+- **Mail ▾** provides friend requests, threads, and direct messages.
+- Friend requests are code-based in the UI (enter collaborator country code;
+  no manual URL entry required).
+- Opening a thread auto-marks unread messages as read.
+
 ## Browser-driven rites (SSE)
 
 `goblintown serve` exposes `/rite/new` — an HTML form that POSTs to
@@ -538,6 +560,20 @@ interrupted on boot.
 | GET    | `/api/artifacts?limit=N`          | JSON list of artifacts (most recent first) |
 | GET    | `/api/warren/stats`               | `{ loot, rites, drift }` for the tier indicator |
 | GET    | `/api/trace/:runId`               | Run as an LLM-MAS Orchestration Trace |
+| GET    | `/api/providers`, `/api/provider` | Provider presets and active provider config |
+| POST   | `/api/provider`                   | Update provider config and saved local key |
+| GET    | `/api/country`                    | Full country state for current Warren |
+| GET    | `/api/country/public`             | Public country identity for discovery |
+| GET    | `/api/country/discover`           | Discoverable country list + random open sample |
+| POST   | `/api/country/join`               | Send join request to another country's lead |
+| POST   | `/api/country/join-request`       | Receive a join request |
+| POST   | `/api/country/join-approve`       | Approve/deny pending join request |
+| GET    | `/api/friends`                    | Friends, pending requests, thread summaries |
+| POST   | `/api/friends/request`            | Send friend request (country-code or URL path) |
+| POST   | `/api/friends/respond`            | Approve/deny a friend request |
+| POST   | `/api/dm/send`                    | Send direct message to a friend |
+| GET    | `/api/dm/:threadId`               | Read DM thread messages |
+| POST   | `/api/dm/:threadId/read`          | Mark unread messages as read |
 | POST   | `/api/inbox`                      | Federation receiver |
 
 ## Tests
@@ -546,7 +582,7 @@ interrupted on boot.
 npm test
 ```
 
-203 tests, no OpenAI calls. Pure-function coverage across drift, reward,
+214 tests, no OpenAI calls. Pure-function coverage across drift, reward,
 Hoard content-addressing, federation signatures (incl. HMAC), audit
 aggregation, reward plugin loader, graph rendering, concurrency semaphore,
 budget tracker, run persistence, markdown export, rite comparison, plus the
