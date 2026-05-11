@@ -8,6 +8,15 @@ spawn focused specialists when the pack fails, and hand the surviving
 answer back as a signed, content-addressed artifact that future rites can
 build on.
 
+## Beta 0.2
+
+`0.2.0-beta.0` is the stabilization cut for the federation/country wave and the recent UI pass.
+
+- Internal refactor: imports are now organized by domain (`core`, `pipeline`, `analysis`, `storage`, `collab`) to reduce coupling between CLI/server codepaths.
+- CLI ergonomics: command help text now lives in a dedicated module (`src/cli-help.ts`) so command wiring is easier to maintain.
+- Goblin-Country flow: discovery/join/approval, role ownership, queueing, and membership persistence are now first-class in both API and CLI.
+- Tank polish: animated pigeon sprite support (walk + peck cycles) and docs for asset expectations in `site/assets`.
+
 ## Background
 
 In April 2026, OpenAI published [*Where the goblins came from*](https://openai.com/index/where-the-goblins-came-from/),
@@ -520,6 +529,25 @@ unassigned roles can auto-fall back to the lead.
 Run state is persisted to `.goblintown/runs/<runId>.json`, so the SSE
 history replays after a server restart; in-flight rites are marked
 interrupted on boot.
+
+### Tank pigeon sprite assets
+
+The Tank UI can render a sprite-driven pigeon (instead of emoji) from files in
+`site/assets/`:
+
+- `pigeon-walk-right.png`
+- `pigeon-walk-left.png`
+- `pigeon-peck.png` (optional idle peck cycle)
+
+Sprite sheet expectations: `5x5` layout, `25` frames, transparent background.
+
+Runtime behavior:
+
+- missing sheets fall back to emoji;
+- missing left-walk sheet mirrors the right-walk sheet;
+- duplicate adjacent frames are de-duplicated at load time;
+- when the peck sheet is present, a peck cycle is triggered at random idle
+  intervals between ~40 and 120 seconds.
 
 ## Layout
 
