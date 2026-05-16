@@ -28,6 +28,7 @@
   "files": [
     "dist",
     "!dist/__tests__",
+    "site/assets",
     "LICENSE",
     "README.md"
   ],
