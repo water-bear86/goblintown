@@ -1,6 +1,6 @@
 {
   "name": "goblintown",
-  "version": "0.2.0-beta.0",
+  "version": "0.5.0-beta.0",
   "description": "Multi-agent orchestration protocol on top of OpenAI.",
   "license": "MIT",
   "author": "0XBL33P",
@@ -14,11 +14,21 @@
   },
   "type": "module",
   "bin": {
-    "goblintown": "./dist/cli.js"
+    "goblintown": "dist/cli.js"
   },
+  "types": "./dist/index.d.ts",
   "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
+    "!dist/__tests__",
+    "site/assets",
     "LICENSE",
     "README.md"
   ],
@@ -27,9 +37,14 @@
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "serve": "node dist/cli.js serve",
+    "pack:check": "npm pack --dry-run",
+    "release:check": "npm run clean && npm run test && npm run pack:check",
     "clean": "rimraf dist",
-    "test": "npm run build && node --test dist/__tests__/drift.test.js dist/__tests__/reward.test.js dist/__tests__/hoard.test.js dist/__tests__/federation.test.js dist/__tests__/audit.test.js dist/__tests__/reward-plugin.test.js dist/__tests__/graph.test.js dist/__tests__/ban-list.test.js dist/__tests__/concurrency.test.js dist/__tests__/budget.test.js dist/__tests__/run-store.test.js dist/__tests__/export-compare.test.js dist/__tests__/pack-prompt.test.js dist/__tests__/banners.test.js dist/__tests__/openai-client.test.js dist/__tests__/providers.test.js dist/__tests__/formatting.test.js dist/__tests__/artifact.test.js dist/__tests__/specialist.test.js dist/__tests__/trace-export.test.js dist/__tests__/planner.test.js dist/__tests__/debate.test.js dist/__tests__/tools.test.js dist/__tests__/embeddings.test.js dist/__tests__/fold.test.js dist/__tests__/country.test.js",
+    "test": "npm run build && node --test dist/__tests__/drift.test.js dist/__tests__/reward.test.js dist/__tests__/hoard.test.js dist/__tests__/federation.test.js dist/__tests__/audit.test.js dist/__tests__/reward-plugin.test.js dist/__tests__/graph.test.js dist/__tests__/ban-list.test.js dist/__tests__/concurrency.test.js dist/__tests__/budget.test.js dist/__tests__/run-store.test.js dist/__tests__/export-compare.test.js dist/__tests__/pack-prompt.test.js dist/__tests__/banners.test.js dist/__tests__/openai-client.test.js dist/__tests__/providers.test.js dist/__tests__/provider-ui.test.js dist/__tests__/settings-menu.test.js dist/__tests__/cloud-mode.test.js dist/__tests__/tank-sprites.test.js dist/__tests__/asteroid.test.js dist/__tests__/docs-help.test.js dist/__tests__/formatting.test.js dist/__tests__/artifact.test.js dist/__tests__/specialist.test.js dist/__tests__/trace-export.test.js dist/__tests__/planner.test.js dist/__tests__/debate.test.js dist/__tests__/tools.test.js dist/__tests__/embeddings.test.js dist/__tests__/fold.test.js dist/__tests__/country.test.js",
     "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=20"
@@ -47,6 +62,7 @@
   "dependencies": {
     "express": "^4.21.0",
     "glob": "^11.0.0",
+    "matter-js": "^0.20.0",
     "openai": "^4.80.0"
   },
   "devDependencies": {
