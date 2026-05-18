@@ -44,10 +44,12 @@ describe("docs and CLI help", () => {
     assert.match(readme, /Settings -> Reset -> Asteroid Mode/);
     assert.match(readme, /FIREBASE_API_KEY/);
     assert.match(readme, /optional Firebase overrides/);
-    assert.match(readme, /270 tests/);
+    assert.match(readme, /274 tests/);
     assert.match(readme, /## Add-ons/);
     assert.match(readme, /## Thesis Engine/);
     assert.match(readme, /## Sentiment Sources/);
+    assert.match(readme, /Tank `SENTIMENT`/);
+    assert.match(readme, /Settings -> Sentiment Sources/);
     assert.match(readme, /--scan "README\.md"/);
     assert.match(readme, /Unknown \/ Unverified/);
     assert.match(readme, /\.goblintown\/secrets\.json/);
@@ -68,10 +70,12 @@ describe("docs and CLI help", () => {
     assert.match(siteIndex, /first-run Local Only \/ Goblintown Cloud choice/);
     assert.match(siteIndex, /Settings menu/);
     assert.match(siteIndex, /Asteroid Mode/);
-    assert.match(siteIndex, /270 tests/);
+    assert.match(siteIndex, /274 tests/);
     assert.match(siteIndex, /Solana add-on/);
     assert.match(siteIndex, /Thesis engine/);
     assert.match(siteIndex, /Sentiment sources/);
+    assert.match(siteIndex, /Tank Sentiment tool/);
+    assert.match(siteIndex, /Settings Sentiment Sources/);
     assert.match(siteIndex, /quality and advantages/);
     assert.match(siteIndex, /not buyability/);
     assert.match(siteIndex, /scan repo files/);

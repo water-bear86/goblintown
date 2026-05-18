@@ -2872,6 +2872,11 @@ function tankHtml(
     top: 2.55rem;
     z-index: 34;
     width: min(360px, calc(100vw - 2rem));
+    max-height: min(560px, calc(100vh - 3.25rem));
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+    scrollbar-color: rgba(143,207,82,0.62) rgba(3, 6, 3, 0.68);
     background: rgba(8, 11, 7, 0.98);
     border: 1px solid var(--accent);
     border-radius: 8px;
@@ -2880,6 +2885,16 @@ function tankHtml(
     display: none;
   }
   .settings-popover.open { display: block; }
+  .settings-popover::-webkit-scrollbar { width: 14px; }
+  .settings-popover::-webkit-scrollbar-track {
+    background: rgba(143,207,82,0.12);
+    border-left: 1px solid rgba(143,207,82,0.2);
+  }
+  .settings-popover::-webkit-scrollbar-thumb {
+    background: rgba(143,207,82,0.58);
+    border: 3px solid rgba(3, 6, 3, 0.86);
+    border-radius: 999px;
+  }
   .settings-title {
     display: flex;
     align-items: center;
@@ -3020,6 +3035,11 @@ function tankHtml(
     right: 1rem;
     top: 2.55rem;
     width: min(520px, calc(100% - 2rem));
+    max-height: min(690px, calc(100vh - 3.6rem));
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+    scrollbar-color: rgba(143,207,82,0.62) rgba(3, 6, 3, 0.68);
     z-index: 31;
     background: rgb(10,14,8);
     border: 1px solid var(--accent);
@@ -3031,6 +3051,22 @@ function tankHtml(
   .addon-popover.open { display: block; }
   .onchain-popover.open { display: grid; gap: 0.55rem; }
   .sentiment-popover.open { display: grid; gap: 0.55rem; }
+  .addon-popover::-webkit-scrollbar,
+  .onchain-popover::-webkit-scrollbar,
+  .sentiment-popover::-webkit-scrollbar { width: 14px; }
+  .addon-popover::-webkit-scrollbar-track,
+  .onchain-popover::-webkit-scrollbar-track,
+  .sentiment-popover::-webkit-scrollbar-track {
+    background: rgba(143,207,82,0.12);
+    border-left: 1px solid rgba(143,207,82,0.2);
+  }
+  .addon-popover::-webkit-scrollbar-thumb,
+  .onchain-popover::-webkit-scrollbar-thumb,
+  .sentiment-popover::-webkit-scrollbar-thumb {
+    background: rgba(143,207,82,0.58);
+    border: 3px solid rgba(3, 6, 3, 0.86);
+    border-radius: 999px;
+  }
   .addon-popover h3,
   .onchain-popover h3,
   .sentiment-popover h3 {
@@ -4545,6 +4581,9 @@ function tankHtml(
     background: var(--bg-deep); border: 1px solid var(--accent);
     padding: 1.2rem 1.5rem; border-radius: 6px;
     width: min(560px, 100%);
+    max-height: min(720px, calc(100% - 2rem));
+    overflow-y: auto;
+    scrollbar-gutter: stable;
     box-shadow: 0 8px 40px rgba(0,0,0,0.7);
   }
   .rite-form h2 { margin: 0 0 0.8rem; color: var(--fg-bright); font-size: 1rem; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -4563,6 +4602,29 @@ function tankHtml(
   .rite-form .check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--fg); margin-bottom: 0.8rem; }
   .rite-form .check input { width: auto; margin: 0; }
   .rite-form .actions { display: flex; gap: 0.6rem; margin-top: 0.5rem; }
+  .thesis-solana-drawer {
+    border: 1px solid rgba(143,207,82,0.24);
+    border-radius: 5px;
+    margin: 0 0 0.8rem;
+    padding: 0.55rem 0.65rem 0.1rem;
+    background: rgba(3, 6, 3, 0.42);
+  }
+  .thesis-solana-drawer summary {
+    cursor: pointer;
+    color: var(--fg-bright);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.45rem;
+  }
+  .thesis-solana-drawer summary::marker { color: var(--accent); }
+  .thesis-solana-drawer:not([open]) { padding-bottom: 0.55rem; }
+  .thesis-solana-drawer:not([open]) .thesis-solana-fields { display: none; }
+  .thesis-solana-fields {
+    display: grid;
+    gap: 0;
+  }
 </style>
 </head>
 <body>
@@ -4601,8 +4663,8 @@ function tankHtml(
       <button class="onchain-chip" id="onchain-chip" type="button" data-settings-label="Onchain">
         <span>Onchain</span><strong>Solana ▾</strong>
       </button>
-      <button class="sentiment-chip" id="sentiment-chip" type="button" data-settings-label="Sentiment">
-        <span>Sentiment</span><strong>Sentiment ▾</strong>
+      <button class="sentiment-chip" id="sentiment-config-chip" type="button" data-settings-label="Sentiment Sources">
+        <span>Sources</span><strong>Sources ▾</strong>
       </button>
       <button class="provider-chip" id="provider-chip" type="button" data-settings-label="API">
         <span>API</span><strong>API ▾</strong>
@@ -4642,7 +4704,7 @@ function tankHtml(
     <p class="onchain-status" id="onchain-status">Read-only Solana lookup. Goblintown never asks for wallet keys and never signs transactions.</p>
   </div>
 
-  <div class="sentiment-popover" id="sentiment-popover">
+  <div class="sentiment-popover" id="sentiment-tool-popover">
     <h3>Sentiment</h3>
     <label for="sentiment-query">Project, Token, Team, or Protocol</label>
     <input id="sentiment-query" placeholder="Jito, Firedancer, your repo, a team, or any project">
@@ -4650,6 +4712,12 @@ function tankHtml(
       <button class="btn primary" type="button" id="sentiment-project">Project</button>
       <button class="btn" type="button" id="sentiment-market">Market</button>
     </div>
+    <pre class="onchain-output" id="sentiment-output">Run a project or market check. Free baseline sources work with no keys; optional connectors improve coverage when configured.</pre>
+    <p class="onchain-status" id="sentiment-status">Uses no-key Alternative.me and GDELT first. Configure optional sources from Settings -> Sentiment Sources.</p>
+  </div>
+
+  <div class="sentiment-popover" id="sentiment-config-popover">
+    <h3>Sentiment Sources</h3>
     <div class="addon-list" id="sentiment-sources"></div>
     <label for="sentiment-secret-source">Optional Key Source</label>
     <select id="sentiment-secret-source"></select>
@@ -4658,8 +4726,7 @@ function tankHtml(
       <button class="btn" type="button" id="sentiment-save-secret">Save Key</button>
       <button class="btn" type="button" id="sentiment-clear-secret">Clear Key</button>
     </div>
-    <pre class="onchain-output" id="sentiment-output">Free baseline sources work with no keys. Optional API keys stay server-side in .goblintown/secrets.json.</pre>
-    <p class="onchain-status" id="sentiment-status">Uses no-key Alternative.me and GDELT first; optional connectors improve coverage when configured.</p>
+    <p class="onchain-status" id="sentiment-config-status">Free baseline sources work with no keys. Optional API keys stay server-side in .goblintown/secrets.json.</p>
   </div>
 
   <div class="provider-popover" id="provider-popover">
@@ -4830,6 +4897,7 @@ function tankHtml(
       <div class="ops-quick">
         <button class="btn primary" id="btn-rite" type="button">NEW RITE</button>
         <button class="btn" id="btn-thesis" type="button">THESIS</button>
+        <button class="btn" id="btn-sentiment" type="button">SENTIMENT</button>
         <button class="btn" id="btn-plan" type="button">PLAN</button>
         <a class="btn" href="/runs">RUNS</a>
       </div>
@@ -5072,13 +5140,16 @@ function tankHtml(
             <label for="thesis-horizon">Horizon</label>
             <input id="thesis-horizon" name="horizon" value="30d" placeholder="30d">
           </div>
-          <div>
+        </div>
+        <details class="thesis-solana-drawer" id="thesis-solana-drawer">
+          <summary id="thesis-solana-toggle">Solana evidence</summary>
+          <div class="thesis-solana-fields">
             <label for="thesis-solana">Solana address</label>
             <input id="thesis-solana" name="solanaAddress" placeholder="optional address / mint / program">
+            <label for="thesis-signature">Solana transaction signature</label>
+            <input id="thesis-signature" name="solanaSignature" placeholder="optional signature">
           </div>
-        </div>
-        <label for="thesis-signature">Solana transaction signature</label>
-        <input id="thesis-signature" name="solanaSignature" placeholder="optional signature">
+        </details>
         <label for="thesis-context">Context</label>
         <textarea id="thesis-context" name="context" rows="2" placeholder="What should the thesis weigh most heavily? Team, tech, traction, moat, ecosystem fit..."></textarea>
         <label for="thesis-globs">Scan globs (one per line, optional)</label>
@@ -5152,8 +5223,10 @@ const onchainSignature = $("onchain-signature");
 const onchainTransaction = $("onchain-transaction");
 const onchainOutput = $("onchain-output");
 const onchainStatus = $("onchain-status");
-const sentimentChip = $("sentiment-chip");
-const sentimentPopover = $("sentiment-popover");
+const sentimentToolButton = $("btn-sentiment");
+const sentimentToolPopover = $("sentiment-tool-popover");
+const sentimentConfigChip = $("sentiment-config-chip");
+const sentimentConfigPopover = $("sentiment-config-popover");
 const sentimentQuery = $("sentiment-query");
 const sentimentProject = $("sentiment-project");
 const sentimentMarket = $("sentiment-market");
@@ -5164,6 +5237,7 @@ const sentimentSaveSecret = $("sentiment-save-secret");
 const sentimentClearSecret = $("sentiment-clear-secret");
 const sentimentOutput = $("sentiment-output");
 const sentimentStatus = $("sentiment-status");
+const sentimentConfigStatus = $("sentiment-config-status");
 
 const rand  = (lo, hi) => lo + Math.random() * (hi - lo);
 const irand = (lo, hi) => Math.floor(rand(lo, hi + 1));
@@ -5190,7 +5264,7 @@ function closeSettingsPopover() {
 }
 
 function closeTopPopovers(exceptId) {
-  ["auth-popover", "country-popover", "mail-popover", "addon-popover", "onchain-popover", "sentiment-popover", "provider-popover"].forEach((id) => {
+  ["auth-popover", "country-popover", "mail-popover", "addon-popover", "onchain-popover", "sentiment-tool-popover", "sentiment-config-popover", "provider-popover"].forEach((id) => {
     if (id === exceptId) return;
     const panel = $(id);
     if (panel) panel.classList.remove("open");
@@ -6169,7 +6243,8 @@ window.addEventListener("resize", () => {
   ["onchain-analyze", "Pre-fill a rite with this Solana summary and verifier tools enabled."],
   ["onchain-signature", "Enter a Solana transaction signature to inspect."],
   ["onchain-transaction", "Fetch parsed transaction status, signers, instructions, fee, and capped logs."],
-  ["sentiment-chip", "Open free and optional-key sentiment sources for project quality research."],
+  ["sentiment-config-chip", "Configure local sentiment sources and optional API keys."],
+  ["btn-sentiment", "Run project or market sentiment checks."],
   ["sentiment-query", "Enter a project, token, team, protocol, repository, or market to check."],
   ["sentiment-project", "Fetch project sentiment from no-key baseline sources and configured optional sources."],
   ["sentiment-market", "Fetch broad crypto market sentiment and trending attention."],
@@ -6634,8 +6709,8 @@ function renderSentimentSources(payload) {
       sentimentSecretSource.appendChild(option);
     }
   }
-  setSettingsActionText(sentimentChip, "Sentiment", configured + "/" + sources.length + " sources ▾");
-  sentimentStatus.textContent = "Baseline sources are free/no-key. Optional configured sources: " + Math.max(0, configured - 2) + "/" + optionalCount + ".";
+  setSettingsActionText(sentimentConfigChip, "Sources", configured + "/" + sources.length + " sources ▾");
+  sentimentConfigStatus.textContent = "Baseline sources are free/no-key. Optional configured sources: " + Math.max(0, configured - 2) + "/" + optionalCount + ".";
 }
 async function loadSentimentSources() {
   try {
@@ -6643,26 +6718,40 @@ async function loadSentimentSources() {
     if (!r.ok) throw new Error(await r.text());
     renderSentimentSources(await r.json());
   } catch (err) {
-    sentimentStatus.textContent = "Sentiment sources unavailable: " + (err.message || err);
+    sentimentConfigStatus.textContent = "Sentiment sources unavailable: " + (err.message || err);
   }
+}
+function appendSentimentSignal(lines, signal) {
+  lines.push("  - " + signal.source + " / " + signal.label);
+  if (signal.classification || signal.value !== undefined) {
+    lines.push("    score: " + [signal.classification, signal.value !== undefined ? signal.value : ""].filter(Boolean).join(" / "));
+  }
+  lines.push("    " + signal.summary);
+  if (signal.url) lines.push("    " + signal.url);
 }
 function renderSentimentSummary(summary) {
   const lines = [
     summary.query ? "query: " + summary.query : "market sentiment",
     "generated: " + summary.generatedAt,
   ];
-  if ((summary.signals || []).length) {
-    lines.push("signals:");
-    summary.signals.forEach((signal) => {
-      lines.push("  - " + signal.source + " / " + signal.label);
-      if (signal.classification || signal.value !== undefined) {
-        lines.push("    score: " + [signal.classification, signal.value !== undefined ? signal.value : ""].filter(Boolean).join(" / "));
-      }
-      lines.push("    " + signal.summary);
-      if (signal.url) lines.push("    " + signal.url);
-    });
+  const signals = summary.signals || [];
+  const marketContext = summary.marketContext || [];
+  if (summary.query) {
+    lines.push("project signals:");
+    if (signals.length) {
+      signals.forEach((signal) => appendSentimentSignal(lines, signal));
+    } else {
+      lines.push("  No query-specific sentiment signals found.");
+    }
+    if (marketContext.length) {
+      lines.push("market context:");
+      marketContext.forEach((signal) => appendSentimentSignal(lines, signal));
+    }
+  } else if (signals.length) {
+    lines.push("market signals:");
+    signals.forEach((signal) => appendSentimentSignal(lines, signal));
   } else {
-    lines.push("signals: none returned");
+    lines.push("market signals: none returned");
   }
   const failed = (summary.sources || []).filter((source) => !source.ok);
   if (failed.length) {
@@ -6670,6 +6759,16 @@ function renderSentimentSummary(summary) {
     failed.forEach((source) => lines.push("  - " + source.id + ": " + (source.error || "failed")));
   }
   sentimentOutput.textContent = lines.join("\\n");
+}
+function sentimentStatusFromSummary(label, summary) {
+  const failed = (summary.sources || []).filter((source) => !source.ok);
+  let message = summary.noQuerySignals
+    ? label + " ready; no query-specific signals found."
+    : label + " ready.";
+  if (failed.length) {
+    message += " " + failed.length + " partial source error" + (failed.length === 1 ? "" : "s") + ".";
+  }
+  return message;
 }
 async function runMarketSentiment() {
   sentimentMarket.disabled = true;
@@ -6681,7 +6780,7 @@ async function runMarketSentiment() {
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.error || "market sentiment failed");
     renderSentimentSummary(payload);
-    sentimentStatus.textContent = "Market sentiment ready.";
+    sentimentStatus.textContent = sentimentStatusFromSummary("Market sentiment", payload);
     setTicker("sentiment: market", true);
   } catch (err) {
     sentimentOutput.textContent = "";
@@ -6711,7 +6810,7 @@ async function runProjectSentiment() {
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.error || "project sentiment failed");
     renderSentimentSummary(payload);
-    sentimentStatus.textContent = "Project sentiment ready.";
+    sentimentStatus.textContent = sentimentStatusFromSummary("Project sentiment", payload);
     setTicker("sentiment: " + query.slice(0, 36), true);
   } catch (err) {
     sentimentOutput.textContent = "";
@@ -6725,15 +6824,15 @@ async function saveSentimentSecret(clear) {
   const source = sentimentSecretSource.value;
   const secret = (sentimentSecret.value || "").trim();
   if (!source) {
-    sentimentStatus.textContent = "Choose a keyed sentiment source.";
+    sentimentConfigStatus.textContent = "Choose a keyed sentiment source.";
     return;
   }
   if (!clear && !secret) {
-    sentimentStatus.textContent = "Paste a key or token first.";
+    sentimentConfigStatus.textContent = "Paste a key or token first.";
     sentimentSecret.focus();
     return;
   }
-  sentimentStatus.textContent = clear ? "Clearing key..." : "Saving key locally...";
+  sentimentConfigStatus.textContent = clear ? "Clearing key..." : "Saving key locally...";
   try {
     const r = await fetch("/api/sentiment/secret", {
       method: "POST",
@@ -6744,18 +6843,26 @@ async function saveSentimentSecret(clear) {
     if (!r.ok) throw new Error(payload.error || "secret update failed");
     sentimentSecret.value = "";
     renderSentimentSources(payload);
-    sentimentStatus.textContent = clear ? "Local key cleared." : "Local key saved. Env vars still override local secrets.";
+    sentimentConfigStatus.textContent = clear ? "Local key cleared." : "Local key saved. Env vars still override local secrets.";
   } catch (err) {
-    sentimentStatus.textContent = "Secret update failed: " + (err.message || err);
+    sentimentConfigStatus.textContent = "Secret update failed: " + (err.message || err);
   }
 }
-sentimentChip.onclick = () => {
+sentimentToolButton.onclick = () => {
   closeSettingsPopover();
-  closeTopPopovers("sentiment-popover");
-  sentimentPopover.classList.toggle("open");
-  if (sentimentPopover.classList.contains("open")) {
-    void loadSentimentSources();
+  closeTopPopovers("sentiment-tool-popover");
+  sentimentToolPopover.classList.toggle("open");
+  if (sentimentToolPopover.classList.contains("open")) {
     setTimeout(() => sentimentQuery.focus(), 30);
+  }
+};
+sentimentConfigChip.onclick = () => {
+  closeSettingsPopover();
+  closeTopPopovers("sentiment-config-popover");
+  sentimentConfigPopover.classList.toggle("open");
+  if (sentimentConfigPopover.classList.contains("open")) {
+    void loadSentimentSources();
+    setTimeout(() => sentimentSecretSource.focus(), 30);
   }
 };
 sentimentMarket.onclick = runMarketSentiment;
@@ -9619,6 +9726,7 @@ function resetRunStage(isPlan, packSize) {
 function setLaunchButtonsDisabled(disabled) {
   $("btn-rite").disabled = disabled;
   $("btn-thesis").disabled = disabled;
+  $("btn-sentiment").disabled = disabled;
   $("btn-plan").disabled = disabled;
 }
 
@@ -10202,6 +10310,8 @@ $("dag-header").onclick = () => {
 /* Rite form overlay wiring */
 let planMode = false;
 function openRiteForm(asPlan) {
+  closeSettingsPopover();
+  closeTopPopovers();
   planMode = !!asPlan;
   $("rite-overlay").classList.add("open");
   $("rf-task").placeholder = planMode
@@ -10211,6 +10321,8 @@ function openRiteForm(asPlan) {
 }
 function closeRiteForm() { $("rite-overlay").classList.remove("open"); }
 function openThesisForm() {
+  closeSettingsPopover();
+  closeTopPopovers();
   $("thesis-overlay").classList.add("open");
   setTimeout(() => $("thesis-subject").focus(), 50);
 }

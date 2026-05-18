@@ -77,6 +77,7 @@ describe("sentiment sources", () => {
           data: [{ value: "50", value_classification: "Neutral", timestamp: "1710000000" }],
         },
         "api.coingecko.com/api/v3/search/trending": { coins: [] },
+        "api.coingecko.com/api/v3/search?": { coins: [] },
         "api.gdeltproject.org/api/v2/doc/doc": {
           articles: [
             { title: "Goblintown ships collaboration backend", url: "https://example.test/a", tone: 1.5, domain: "example.test" },
@@ -90,6 +91,70 @@ describe("sentiment sources", () => {
     assert.equal(gdelt?.kind, "news-tone");
     assert.equal(gdelt?.value, 0.5);
     assert.match(gdelt?.summary ?? "", /2 articles/);
+  });
+
+  it("keeps project sentiment signals query-specific and separates market context", async () => {
+    const result = await summarizeProjectSentiment("Jito", {
+      fetchImpl: fakeFetch({
+        "api.alternative.me/fng": {
+          data: [{ value: "28", value_classification: "Fear", timestamp: "1710000000" }],
+        },
+        "api.coingecko.com/api/v3/search/trending": {
+          coins: [{ item: { name: "Dolphin", symbol: "POD" } }],
+        },
+        "api.coingecko.com/api/v3/search?": {
+          coins: [
+            { id: "jito-governance-token", name: "Jito", symbol: "JTO", market_cap_rank: 112 },
+            { id: "jitosol", name: "Jito Staked SOL", symbol: "JITOSOL", market_cap_rank: 121 },
+          ],
+        },
+        "api.gdeltproject.org/api/v2/doc/doc": {
+          articles: [
+            { title: "Jito governance vote draws attention", url: "https://example.test/j", tone: 2, domain: "example.test" },
+          ],
+        },
+      }),
+    });
+
+    assert.deepEqual(
+      result.signals.map((signal) => signal.source),
+      ["coingecko", "gdelt"],
+    );
+    const marketContext = (result as { marketContext?: Array<{ source: string }> }).marketContext;
+    assert.equal(marketContext?.map((signal) => signal.source).join(","), "alternative-me,coingecko");
+    assert.doesNotMatch(result.signals.map((signal) => signal.summary).join("\n"), /Dolphin|Fear/);
+    assert.match(result.signals.find((signal) => signal.source === "coingecko")?.summary ?? "", /Jito/);
+  });
+
+  it("reports when project sentiment has no query-specific signals", async () => {
+    const result = await summarizeProjectSentiment("DJ15QJxVPFGv6kYhT6LvDGqG9b4aBFWQzavA7dGxpump", {
+      fetchImpl: fakeFetch({
+        "api.alternative.me/fng": {
+          data: [{ value: "28", value_classification: "Fear", timestamp: "1710000000" }],
+        },
+        "api.coingecko.com/api/v3/search/trending": {
+          coins: [{ item: { name: "Dolphin", symbol: "POD" } }],
+        },
+        "api.coingecko.com/api/v3/search?": { coins: [] },
+        "api.gdeltproject.org/api/v2/doc/doc": { articles: [] },
+      }),
+    });
+
+    assert.equal(result.signals.length, 0);
+    const metadata = result as { marketContext?: unknown[]; noQuerySignals?: boolean };
+    assert.ok((metadata.marketContext?.length ?? 0) > 0);
+    assert.equal(metadata.noQuerySignals, true);
+  });
+
+  it("explains no-key source network timeouts instead of surfacing raw fetch failed", async () => {
+    const result = await summarizeProjectSentiment("Goblintown", {
+      fetchImpl: timeoutGdeltFetch(),
+    });
+
+    const gdelt = result.sources.find((s) => s.id === "gdelt");
+    assert.equal(gdelt?.ok, false);
+    assert.equal(gdelt?.error, "network timeout reaching api.gdeltproject.org");
+    assert.doesNotMatch(gdelt?.error ?? "", /fetch failed/i);
   });
 });
 
@@ -109,5 +174,25 @@ function fakeFetch(payloads: Record<string, unknown>): typeof fetch {
         return JSON.stringify(payloads[key]);
       },
     } as Response;
+  }) as typeof fetch;
+}
+
+function timeoutGdeltFetch(): typeof fetch {
+  const base = fakeFetch({
+    "api.alternative.me/fng": {
+      data: [{ value: "50", value_classification: "Neutral", timestamp: "1710000000" }],
+    },
+    "api.coingecko.com/api/v3/search/trending": { coins: [] },
+    "api.coingecko.com/api/v3/search?": { coins: [] },
+  });
+  return (async (url: string | URL | Request) => {
+    const text = String(url);
+    if (text.includes("api.gdeltproject.org/api/v2/doc/doc")) {
+      const cause = Object.assign(new Error("Connect Timeout Error"), {
+        code: "UND_ERR_CONNECT_TIMEOUT",
+      });
+      throw Object.assign(new TypeError("fetch failed"), { cause });
+    }
+    return await base(url);
   }) as typeof fetch;
 }

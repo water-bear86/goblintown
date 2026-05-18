@@ -1942,25 +1942,40 @@ function formatSentimentSources(payload: ReturnType<typeof sentimentSourcesPaylo
   return lines.join("\n");
 }
 
+function appendFormattedSentimentSignal(lines: string[], signal: SentimentSummary["signals"][number]): void {
+  const parts = [
+    signal.label,
+    signal.classification,
+    signal.value !== undefined ? String(signal.value) : "",
+  ].filter(Boolean);
+  lines.push(`  - ${signal.source}: ${parts.join(" / ")}`);
+  lines.push(`    ${signal.summary}`);
+  if (signal.url) lines.push(`    ${signal.url}`);
+}
+
 function formatSentimentSummary(summary: SentimentSummary): string {
   const lines = [
     summary.query ? `Sentiment for: ${summary.query}` : "Market sentiment",
     `generated: ${summary.generatedAt}`,
   ];
-  if (summary.signals.length) {
-    lines.push("signals:");
-    for (const signal of summary.signals) {
-      const parts = [
-        signal.label,
-        signal.classification,
-        signal.value !== undefined ? String(signal.value) : "",
-      ].filter(Boolean);
-      lines.push(`  - ${signal.source}: ${parts.join(" / ")}`);
-      lines.push(`    ${signal.summary}`);
-      if (signal.url) lines.push(`    ${signal.url}`);
+  const signals = summary.signals ?? [];
+  const marketContext = summary.marketContext ?? [];
+  if (summary.query) {
+    lines.push("project signals:");
+    if (signals.length) {
+      for (const signal of signals) appendFormattedSentimentSignal(lines, signal);
+    } else {
+      lines.push("  No query-specific sentiment signals found.");
     }
+    if (marketContext.length) {
+      lines.push("market context:");
+      for (const signal of marketContext) appendFormattedSentimentSignal(lines, signal);
+    }
+  } else if (signals.length) {
+    lines.push("market signals:");
+    for (const signal of signals) appendFormattedSentimentSignal(lines, signal);
   } else {
-    lines.push("signals: none returned");
+    lines.push("market signals: none returned");
   }
   const failed = summary.sources.filter((source) => !source.ok);
   if (failed.length) {

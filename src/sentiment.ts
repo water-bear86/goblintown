@@ -33,11 +33,20 @@ export interface SentimentSignal {
   url?: string;
 }
 
+export interface SentimentSourceRun {
+  id: string;
+  ok: boolean;
+  error?: string;
+  scope?: "market" | "market-context" | "project";
+}
+
 export interface SentimentSummary {
   generatedAt: string;
   query?: string;
   signals: SentimentSignal[];
-  sources: Array<{ id: string; ok: boolean; error?: string }>;
+  marketContext?: SentimentSignal[];
+  noQuerySignals?: boolean;
+  sources: SentimentSourceRun[];
 }
 
 export interface SentimentFetchOptions {
@@ -140,8 +149,8 @@ export async function summarizeMarketSentiment(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sources: SentimentSummary["sources"] = [];
   const signals: SentimentSignal[] = [];
-  await collectSource(sources, signals, "alternative-me", () => fetchFearGreed(fetchImpl));
-  await collectSource(sources, signals, "coingecko", () => fetchCoinGeckoTrending(fetchImpl, sourceSecret(opts, "coingecko")));
+  await collectSource(sources, signals, "alternative-me", () => fetchFearGreed(fetchImpl), "market");
+  await collectSource(sources, signals, "coingecko", () => fetchCoinGeckoTrending(fetchImpl, sourceSecret(opts, "coingecko")), "market");
   return {
     generatedAt: new Date().toISOString(),
     signals,
@@ -155,15 +164,28 @@ export async function summarizeProjectSentiment(
 ): Promise<SentimentSummary> {
   const cleanQuery = query.trim();
   if (!cleanQuery) throw new Error("query is required");
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const sources: SentimentSummary["sources"] = [];
+  const signals: SentimentSignal[] = [];
+  await collectSource(
+    sources,
+    signals,
+    "coingecko",
+    () => fetchCoinGeckoProjectSearch(cleanQuery, fetchImpl, sourceSecret(opts, "coingecko")),
+    "project",
+  );
+  await collectSource(sources, signals, "gdelt", () => fetchGdeltNewsTone(cleanQuery, fetchImpl), "project");
   const market = await summarizeMarketSentiment(opts);
-  const signals = [...market.signals];
-  const sources = [...market.sources];
-  await collectSource(sources, signals, "gdelt", () => fetchGdeltNewsTone(cleanQuery, opts.fetchImpl ?? fetch));
   return {
     generatedAt: new Date().toISOString(),
     query: cleanQuery,
     signals,
-    sources,
+    marketContext: market.signals,
+    noQuerySignals: signals.length === 0,
+    sources: [
+      ...sources,
+      ...market.sources.map((source) => ({ ...source, scope: "market-context" as const })),
+    ],
   };
 }
 
@@ -172,13 +194,14 @@ async function collectSource(
   signals: SentimentSignal[],
   id: string,
   fn: () => Promise<SentimentSignal | undefined>,
+  scope?: SentimentSourceRun["scope"],
 ): Promise<void> {
   try {
     const signal = await fn();
     if (signal) signals.push(signal);
-    sources.push({ id, ok: true });
+    sources.push({ id, ok: true, ...(scope ? { scope } : {}) });
   } catch (err) {
-    sources.push({ id, ok: false, error: err instanceof Error ? err.message : String(err) });
+    sources.push({ id, ok: false, error: err instanceof Error ? err.message : String(err), ...(scope ? { scope } : {}) });
   }
 }
 
@@ -234,6 +257,44 @@ async function fetchCoinGeckoTrending(
   };
 }
 
+async function fetchCoinGeckoProjectSearch(
+  query: string,
+  fetchImpl: FetchLike,
+  apiKey?: string,
+): Promise<SentimentSignal | undefined> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["x-cg-demo-api-key"] = apiKey;
+  const url = new URL("https://api.coingecko.com/api/v3/search");
+  url.searchParams.set("query", query);
+  const json = await fetchJson(fetchImpl, url.toString(), headers);
+  const coins = Array.isArray(json.coins) ? json.coins : [];
+  const matches = coins
+    .map((row) => {
+      if (!row || typeof row !== "object") return "";
+      const rec = row as Record<string, unknown>;
+      const name = typeof rec.name === "string"
+        ? rec.name
+        : typeof rec.id === "string"
+          ? rec.id
+          : "";
+      const symbol = typeof rec.symbol === "string" ? rec.symbol.toUpperCase() : "";
+      const rank = Number(rec.market_cap_rank);
+      const rankSuffix = Number.isFinite(rank) ? `, rank #${rank}` : "";
+      return symbol ? `${name} (${symbol}${rankSuffix})` : name;
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+  if (!matches.length) return undefined;
+  return {
+    source: "coingecko",
+    kind: "project-search-attention",
+    label: "CoinGecko project search",
+    value: matches.length,
+    url: `https://www.coingecko.com/en/search?query=${encodeURIComponent(query)}`,
+    summary: `CoinGecko query matches: ${matches.join(", ")}.`,
+  };
+}
+
 async function fetchGdeltNewsTone(query: string, fetchImpl: FetchLike): Promise<SentimentSignal | undefined> {
   const url = new URL("https://api.gdeltproject.org/api/v2/doc/doc");
   url.searchParams.set("query", query);
@@ -244,6 +305,7 @@ async function fetchGdeltNewsTone(query: string, fetchImpl: FetchLike): Promise<
   url.searchParams.set("sort", "datedesc");
   const json = await fetchJson(fetchImpl, url.toString());
   const articles = Array.isArray(json.articles) ? json.articles : [];
+  if (!articles.length) return undefined;
   const tones = articles
     .map((row) => (row && typeof row === "object" ? Number((row as Record<string, unknown>).tone) : NaN))
     .filter((value) => Number.isFinite(value));
@@ -265,9 +327,49 @@ async function fetchJson(
   url: string,
   headers: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
-  const res = await fetchImpl(url, { headers });
+  let res: Response;
+  try {
+    res = await fetchImpl(url, { headers });
+  } catch (err) {
+    throw new Error(describeFetchFailure(url, err));
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json() as Record<string, unknown>;
+}
+
+function describeFetchFailure(url: string, err: unknown): string {
+  const host = hostFromUrl(url);
+  const own = errorRecord(err);
+  const cause = errorRecord(own?.cause);
+  const code = typeof cause?.code === "string"
+    ? cause.code
+    : typeof own?.code === "string"
+      ? own.code
+      : "";
+  const causeMessage = typeof cause?.message === "string" ? cause.message : "";
+  const message = typeof own?.message === "string" ? own.message : String(err);
+  const detail = causeMessage || (message === "fetch failed" ? "" : message);
+
+  if (
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    /connect timeout|timed out|timeout/i.test(causeMessage || message)
+  ) {
+    return `network timeout reaching ${host}`;
+  }
+  if (detail) return `network error reaching ${host}: ${detail}`;
+  return `network error reaching ${host}`;
+}
+
+function errorRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function hostFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
 }
 
 function sourceSecret(

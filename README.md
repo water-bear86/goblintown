@@ -436,9 +436,9 @@ vars win over local secrets:
 - `CRYPTOPANIC_AUTH_TOKEN`
 - `LUNARCRUSH_API_KEY`
 
-The Tank exposes the same controls in **Settings -> Sentiment**. It can run
-market or project sentiment checks and save/clear optional keys server-side;
-raw keys are never returned to the page.
+The Tank splits use from configuration: run market or project checks from
+Tank `SENTIMENT`, then manage optional connector keys from
+**Settings -> Sentiment Sources**. Raw keys are never returned to the page.
 
 ## Add-ons
 
@@ -795,7 +795,7 @@ Runtime behavior:
 npm test
 ```
 
-270 tests, no OpenAI calls. Pure-function coverage across drift, reward,
+274 tests, no OpenAI calls. Pure-function coverage across drift, reward,
 Hoard content-addressing, federation signatures (incl. HMAC), audit
 aggregation, reward plugin loader, graph rendering, concurrency semaphore,
 budget tracker, run persistence, markdown export, rite comparison, plus the
@@ -804,7 +804,9 @@ clustering, planner DAG validation and topological order, debate prompt
 construction, verifier tool dispatch, add-on registry, Solana read-only lookup,
 profile/activity/transaction/token summaries, thesis prompt and evidence
 construction, Tank thesis workflow wiring, sentiment source/key handling,
-sentiment CLI and Settings wiring, embeddings ranking math (cosine, RRF fusion),
+query-specific project sentiment, market context separation, source failure normalization,
+and Tank/Settings wiring,
+embeddings ranking math (cosine, RRF fusion),
 context-folding clustering, provider routing, output formatting, cloud mode,
 Settings menu reset flows, sprite assets, and trace-export schema mapping.
 
@@ -823,7 +825,7 @@ ship together and are covered by the test suite:
 | **Verifier tools** | Troll can invoke `json.parse`, `regex.match`, gated `http.head`, and enabled add-on tools before scoring. | `--troll-tools` |
 | **Add-ons** | Optional local tool packs. The bundled Solana add-on contributes read-only onchain investigator tools for address profiles, activity, parsed transactions, token mint/account data, balances, account metadata, token accounts, signatures, and RPC health. | Settings -> Add-ons/Onchain, `goblintown addon solana <address>`, `goblintown addon solana tx <signature>` |
 | **Thesis engine** | Quality-and-advantage thesis memos for any project, team, product, protocol, or decision. Solana flags add read-only onchain diligence context. It is not a buy/sell recommendation. | Tank `THESIS`, `goblintown thesis "<subject>"` |
-| **Sentiment** | Free/no-key Alternative.me and GDELT baselines plus optional CoinGecko, Dune, Neynar, Santiment, CryptoPanic, and LunarCrush keys stored locally in `.goblintown/secrets.json`. | Settings -> Sentiment, `goblintown sentiment sources`, `goblintown sentiment project "<query>"` |
+| **Sentiment** | Free/no-key Alternative.me and GDELT baselines plus optional CoinGecko, Dune, Neynar, Santiment, CryptoPanic, and LunarCrush keys stored locally in `.goblintown/secrets.json`. Project checks keep query-specific signals separate from broad market context. | Tank `SENTIMENT`, Settings -> Sentiment Sources, `goblintown sentiment sources`, `goblintown sentiment project "<query>"` |
 | **Provider routing** | OpenAI, OpenRouter, Ollama, LM Studio, Groq, Together, Mistral, DeepSeek, Anthropic, Gemini, and custom OpenAI-compatible endpoints. | Settings -> API Provider, `goblintown route` |
 | **Goblintown Cloud** | Bundled Firebase-backed SSO, friend codes, discovery, mail, and country metadata for users who opt in. | first-run prompt, Settings -> Account |
 | **Federation and Country** | Filesystem/HTTP artifact delivery, friend requests, direct messages, country discovery, join approvals, and team role assignment. | Settings -> Country/Mail, `goblintown country` |

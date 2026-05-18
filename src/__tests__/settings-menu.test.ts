@@ -23,7 +23,7 @@ describe("settings launcher", () => {
     assert.doesNotMatch(stripMarkup, /id="btn-asteroid"/);
   });
 
-  it("collects account, country, mail, add-ons, API, and a nested reset menu in the settings launcher", () => {
+  it("collects account, country, mail, add-ons, API, sentiment config, and a nested reset menu in the settings launcher", () => {
     const settingsStart = serverSource.indexOf('id="settings-popover"');
     const settingsEnd = serverSource.indexOf('id="provider-popover"', settingsStart);
     assert.notEqual(settingsStart, -1);
@@ -35,6 +35,7 @@ describe("settings launcher", () => {
     assert.match(settingsMarkup, /data-settings-label="Mail"/);
     assert.match(settingsMarkup, /data-settings-label="Add-ons"/);
     assert.match(settingsMarkup, /data-settings-label="API"/);
+    assert.match(settingsMarkup, /id="sentiment-config-chip"[\s\S]*data-settings-label="Sentiment Sources"/);
     assert.match(settingsMarkup, /id="reset-chip"[\s\S]*<span>Reset<\/span>[\s\S]*Reset ▸/);
     assert.match(settingsMarkup, /id="settings-reset-panel"[\s\S]*id="btn-asteroid"[\s\S]*Asteroid Mode/);
     assert.match(serverSource, /const settingsChip = \$\("settings-chip"\)/);
@@ -44,5 +45,13 @@ describe("settings launcher", () => {
     assert.match(serverSource, /function setResetMenuOpen/);
     assert.match(serverSource, /function setSettingsActionText/);
     assert.match(serverSource, /closeSettingsPopover\(\)/);
+  });
+
+  it("keeps the settings menu scrollable when controls exceed the visible tank area", () => {
+    const style = serverSource.match(/\.settings-popover\s*\{(?<body>[\s\S]*?)\n  \}/);
+    assert.ok(style?.groups?.body);
+    assert.match(style.groups.body, /max-height:[^;]+;/);
+    assert.match(style.groups.body, /overflow-y:\s*scroll;/);
+    assert.match(style.groups.body, /scrollbar-gutter:\s*stable;/);
   });
 });

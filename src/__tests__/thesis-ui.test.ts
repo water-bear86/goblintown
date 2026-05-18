@@ -13,7 +13,11 @@ describe("thesis workflow UI and CLI", () => {
     assert.match(serverSource, /id="btn-thesis"/);
     assert.match(serverSource, /id="thesis-overlay"/);
     assert.match(serverSource, /id="thesis-subject"/);
+    assert.match(serverSource, /id="thesis-solana-drawer"/);
+    assert.match(serverSource, /id="thesis-solana-toggle"/);
     assert.match(serverSource, /id="thesis-solana"/);
+    assert.match(serverSource, /id="thesis-signature"/);
+    assert.match(serverSource, /\.thesis-solana-drawer:not\(\[open\]\) \.thesis-solana-fields \{ display: none; \}/);
     assert.match(serverSource, /\/api\/thesis/);
   });
 
