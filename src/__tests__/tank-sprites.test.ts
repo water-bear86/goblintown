@@ -54,13 +54,51 @@ describe("tank sprite assets", () => {
     assert.match(serverSource, /\.creature\.troll-animated\[data-state="idle"\] \.idle-sprite/);
   });
 
-  it("ships the configured tank sprite sheets", () => {
+  it("ships bundled and prepared tank sprite sheets", () => {
     assert.equal(existsSync(join(repoRoot, "site", "assets", "gremlin-idle.png")), true);
     assert.equal(existsSync(join(repoRoot, "site", "assets", "ogre-idle.png")), true);
     assert.equal(existsSync(join(repoRoot, "site", "assets", "raccoon-sleep.png")), true);
     assert.equal(existsSync(join(repoRoot, "site", "assets", "raccoon-get-up.png")), true);
     assert.equal(existsSync(join(repoRoot, "site", "assets", "raccoon-scurry.png")), true);
     assert.equal(existsSync(join(repoRoot, "site", "assets", "troll-idle.png")), true);
+    for (const filename of goblinActionSheets.map((sheet) => sheet.filename)) {
+      assert.equal(existsSync(join(repoRoot, "site", "assets", filename)), true);
+    }
     assert.equal(existsSync(join(repoRoot, "site", "assets", "gtowntextmark.png")), true);
   });
+
+  it("ships Goblintown goblin action sheets with expected frame strips", () => {
+    for (const sheet of goblinActionSheets) {
+      const dimensions = readPngDimensions(join(repoRoot, "site", "assets", sheet.filename));
+      assert.deepEqual(dimensions, { width: sheet.width, height: sheet.height });
+    }
+  });
 });
+
+const goblinActionSheets = [
+  { filename: "goblin-green-argue.png", width: 1536, height: 128 },
+  { filename: "goblin-fire-argue.png", width: 1536, height: 128 },
+  { filename: "goblin-sceptre-argue.png", width: 1536, height: 128 },
+  { filename: "goblin-spear-argue.png", width: 1536, height: 128 },
+  { filename: "goblin-green-defend.png", width: 1536, height: 128 },
+  { filename: "goblin-fire-defend.png", width: 1536, height: 128 },
+  { filename: "goblin-sceptre-defend.png", width: 2816, height: 128 },
+  { filename: "goblin-spear-defend.png", width: 1536, height: 128 },
+  { filename: "goblin-green-go-home.png", width: 1536, height: 128 },
+  { filename: "goblin-fire-go-home.png", width: 1792, height: 128 },
+  { filename: "goblin-sceptre-go-home.png", width: 1536, height: 128 },
+  { filename: "goblin-spear-go-home.png", width: 1536, height: 128 },
+  { filename: "goblin-green-come-out.png", width: 1536, height: 128 },
+  { filename: "goblin-fire-come-out.png", width: 1536, height: 128 },
+  { filename: "goblin-sceptre-come-out.png", width: 1536, height: 128 },
+  { filename: "goblin-spear-come-out.png", width: 1664, height: 128 },
+] as const;
+
+function readPngDimensions(path: string): { width: number; height: number } {
+  const buf = readFileSync(path);
+  assert.equal(buf.toString("ascii", 1, 4), "PNG");
+  return {
+    width: buf.readUInt32BE(16),
+    height: buf.readUInt32BE(20),
+  };
+}
