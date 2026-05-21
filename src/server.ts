@@ -2813,7 +2813,7 @@ function tankHtml(
     --pass: #b6f37a;
     --fail: #f3a07a;
     --warn: #f3df7a;
-    --bubble-bg: #14201a;
+    --bubble-bg: rgba(20, 32, 26, 0.78);
     --bubble-border: #2e4220;
     --sky: #131c14;
   }
@@ -4131,11 +4131,12 @@ function tankHtml(
   .creature.pos-pigeon[data-state="idle"] { animation: none; }
   .pos-gremlin { top: 9%;  right: 12%; }
   .pos-ogre    { top: 35%; left: 7%; }
-  .pos-goblins { bottom: 14%; left: 50%; transform: translateX(-50%); width: min(92%, 760px); }
+  .pos-goblins { position: absolute; top: 28%; left: 50%; transform: translateX(-50%); width: min(92%, 760px); z-index: 4; }
   .pos-raccoon { bottom: 8%; left: 12%; }
   .pos-troll   { bottom: 11%; right: 11%; }
 
   .goblin-pile {
+    position: relative; z-index: 2;
     display: flex; flex-wrap: wrap-reverse; gap: 0.45rem 0.7rem;
     align-items: flex-end; justify-content: center;
   }
@@ -4147,10 +4148,20 @@ function tankHtml(
   }
   .goblin-wrap[data-home="true"] { opacity: 0; transform: translateY(10px) scale(0.72); pointer-events: none; }
   .goblin-wrap[data-home="false"] { opacity: 1; transform: translateY(0) scale(1); }
+  .goblin-wrap[data-specialist="true"] .goblin-sprite { filter: invert(1) hue-rotate(160deg) saturate(1.45) contrast(1.08); }
+  .goblin-wrap[data-specialist="true"] .personality { color: #9ef8ff; text-shadow: 0 0 8px rgba(158,248,255,0.42); }
   .goblin-sprite {
     width: 76px; height: 76px; display: block;
     image-rendering: pixelated;
   }
+  .goblin-explosion {
+    position: absolute; left: 50%; top: 42%; z-index: 5;
+    width: min(58vw, 360px); height: auto;
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.12s ease, transform 0.18s ease;
+  }
+  .goblin-explosion.active { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
   .creature.goblin-sprite-animated .emoji { display: none; }
   .creature.goblin-sprite-animated .goblin-sprite { display: block; }
   .personality {
@@ -4165,6 +4176,7 @@ function tankHtml(
     border: 1px solid var(--bubble-border); border-radius: 6px;
     color: var(--fg-bright); font-size: 0.74rem; line-height: 1.35;
     box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+    backdrop-filter: blur(2px);
     opacity: 0; transform: translateY(6px);
     animation: bubble-in 0.25s ease-out forwards, bubble-out 0.4s ease-in forwards;
     animation-delay: 0s, 4s;
@@ -4249,13 +4261,14 @@ function tankHtml(
     position: absolute;
     max-width: 32ch;
     padding: 0.5rem 0.7rem;
-    background: rgba(20,32,26,0.96);
+    background: rgba(20, 32, 26, 0.78);
     border: 1px dashed var(--accent);
     border-radius: 6px;
     color: var(--fg-bright);
     font-size: 0.72rem;
     line-height: 1.4;
     box-shadow: 0 4px 18px rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
     pointer-events: none;
     z-index: 7;
     white-space: pre-wrap;
@@ -5058,6 +5071,7 @@ function tankHtml(
     </div>
     <div class="pos-goblins" id="c-goblins">
       <div class="goblin-pile" id="goblin-pile"></div>
+      <canvas class="goblin-explosion" id="goblin-explosion" width="220" height="175" aria-hidden="true"></canvas>
     </div>
     <div class="creature pos-raccoon" id="c-raccoon" data-state="idle"
          style="--sway-dur: 4.4s; --sway-x: 3px; --sway-delay: -1.3s;">
@@ -5211,6 +5225,8 @@ const tank = $("tank");
 const ticker = $("ticker");
 const tickerText = $("ticker-text");
 const goblinPile = $("goblin-pile");
+const goblinExplosion = $("goblin-explosion");
+const goblinExplosionCtx = goblinExplosion ? goblinExplosion.getContext("2d") : null;
 const bubbleLayer = $("bubble-layer");
 const warren = $("warren");
 const workarea = $("workarea");
@@ -5407,6 +5423,14 @@ const GOBLIN_ACTION_SHEETS = {
     "go-home": { src: "/assets/goblin-sceptre-go-home.png", frames: 12, fps: 10 },
     "come-out": { src: "/assets/goblin-sceptre-come-out.png", frames: 12, fps: 10 },
   },
+};
+
+const GOBLIN_EXPLOSION_SHEET = {
+  src: "/assets/goblin-explosion.png",
+  cols: 4,
+  rows: 3,
+  totalFrames: 10,
+  fps: 14,
 };
 
 /* Pigeon sprite renderer */
@@ -9477,23 +9501,137 @@ setTimeout(maybeStartOnboarding, 120);
 }
 
 /* Bubbles */
-const MAX_BUBBLES = 3;
+const MAX_BUBBLES = 6;
+const BUBBLE_GAP = 8;
 const activeBubbles = [];
-function positionBubbleAboveTarget(b, creatureEl, preferredWidth) {
-  const tankRect = tank.getBoundingClientRect();
+
+function rectsOverlap(a, b, gap) {
+  const g = gap || 0;
+  return !(
+    a.right + g <= b.left ||
+    a.left >= b.right + g ||
+    a.bottom + g <= b.top ||
+    a.top >= b.bottom + g
+  );
+}
+
+function bubbleOverlapArea(a, b) {
+  const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  return x * y;
+}
+
+function clampBubbleRect(left, top, width, height, tankRect) {
+  const x = Math.max(8, Math.min(tankRect.width - width - 8, left));
+  const y = Math.max(8, Math.min(tankRect.height - height - 8, top));
+  return { left: x, top: y, right: x + width, bottom: y + height, width, height };
+}
+
+function getBubbleLayoutItems() {
+  const seen = new Set();
+  const items = [];
+  const add = (el) => {
+    if (!el || !el.isConnected || seen.has(el)) return;
+    const target = el.__bubbleTarget;
+    if (!target || !target.isConnected) return;
+    seen.add(el);
+    items.push({
+      el,
+      target,
+      preferredWidth: el.__preferredWidth || 220,
+    });
+  };
+  activeBubbles.forEach(add);
+  Object.values(thinkingBubbles).forEach(add);
+  return items;
+}
+
+function bubbleCandidatesForTarget(cx, targetTop, targetBottom, bw, bh, tankRect) {
+  const above = targetTop - bh - 14;
+  const below = targetBottom + 14;
+  const candidates = [
+    { left: cx - bw / 2, top: above, tail: "bc" },
+    { left: cx - bw - 18, top: above - 6, tail: "br" },
+    { left: cx + 18, top: above - 6, tail: "bl" },
+    { left: cx - bw / 2, top: above - bh - BUBBLE_GAP, tail: "bc" },
+    { left: cx - bw - 18, top: above - bh - BUBBLE_GAP, tail: "br" },
+    { left: cx + 18, top: above - bh - BUBBLE_GAP, tail: "bl" },
+    { left: cx - bw / 2, top: below, tail: "tc" },
+    { left: cx - bw - 18, top: below + 6, tail: "tc" },
+    { left: cx + 18, top: below + 6, tail: "tl" },
+  ];
+  const lanes = [
+    cx - bw / 2,
+    cx - bw - 18,
+    cx + 18,
+    tankRect.width / 2 - bw / 2,
+    8,
+    tankRect.width - bw - 8,
+  ];
+  const step = Math.max(42, Math.min(72, bh + BUBBLE_GAP));
+  for (const left of lanes) {
+    for (let top = Math.max(8, above); top >= 8; top -= step) {
+      candidates.push({ left, top, tail: "bc" });
+    }
+    for (let top = Math.max(8, below); top <= tankRect.height - bh - 8; top += step) {
+      candidates.push({ left, top, tail: "tc" });
+    }
+  }
+  return candidates;
+}
+
+function placeBubbleAvoidingOverlap(item, placed, tankRect) {
+  const b = item.el;
+  const creatureEl = item.target;
   const cRect = creatureEl.getBoundingClientRect();
   const cx = cRect.left - tankRect.left + cRect.width / 2;
-  const cy = cRect.top - tankRect.top;
-  const bw = Math.min(preferredWidth || b.offsetWidth || 220, tankRect.width - 16);
+  const targetTop = cRect.top - tankRect.top;
+  const targetBottom = cRect.bottom - tankRect.top;
+  const bw = Math.min(item.preferredWidth || b.offsetWidth || 220, tankRect.width - 16);
   b.style.width = bw + "px";
   const bh = b.offsetHeight || 56;
-  let left = cx - bw / 2;
-  left = Math.max(8, Math.min(tankRect.width - bw - 8, left));
-  let top = cy - bh - 14;
-  if (top < 8) top = Math.max(8, cy - bh - 4);
-  b.style.left = left + "px";
-  b.style.top = top + "px";
-  b.dataset.tail = "bc";
+  const candidates = bubbleCandidatesForTarget(cx, targetTop, targetBottom, bw, bh, tankRect)
+    .map((candidate) => ({
+      rect: clampBubbleRect(candidate.left, candidate.top, bw, bh, tankRect),
+      tail: candidate.tail,
+    }));
+
+  let best = candidates[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const collides = placed.some((rect) => rectsOverlap(candidate.rect, rect, BUBBLE_GAP));
+    if (!collides) {
+      best = candidate;
+      break;
+    }
+    const overlap = placed.reduce((sum, rect) => sum + bubbleOverlapArea(candidate.rect, rect), 0);
+    const distance = Math.abs(candidate.rect.left + bw / 2 - cx) + Math.abs(candidate.rect.bottom - targetTop);
+    const score = overlap * 1000 + distance;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  b.style.left = best.rect.left + "px";
+  b.style.top = best.rect.top + "px";
+  b.dataset.tail = best.tail;
+  placed.push(best.rect);
+}
+
+function layoutBubbleLayer() {
+  const tankRect = tank.getBoundingClientRect();
+  if (!tankRect.width || !tankRect.height) return;
+  const placed = [];
+  for (const item of getBubbleLayoutItems()) {
+    placeBubbleAvoidingOverlap(item, placed, tankRect);
+  }
+}
+
+function positionBubbleAboveTarget(b, creatureEl, preferredWidth) {
+  b.__bubbleTarget = creatureEl;
+  b.__preferredWidth = preferredWidth || 220;
+  layoutBubbleLayer();
 }
 function dispatchBubble(creatureEl, text, kind, lifetime) {
   if (!creatureEl) return;
@@ -9510,10 +9648,21 @@ function dispatchBubble(creatureEl, text, kind, lifetime) {
   if (activeBubbles.length > MAX_BUBBLES) {
     const old = activeBubbles.shift();
     old.style.animation = "bubble-out 0.3s ease-in forwards";
-    setTimeout(() => old.remove(), 350);
+    setTimeout(() => {
+      old.remove();
+      layoutBubbleLayer();
+    }, 350);
   }
-  setTimeout(() => { b.remove(); const i = activeBubbles.indexOf(b); if (i >= 0) activeBubbles.splice(i, 1); }, lifetime + 400);
+  layoutBubbleLayer();
+  setTimeout(() => {
+    b.remove();
+    const i = activeBubbles.indexOf(b);
+    if (i >= 0) activeBubbles.splice(i, 1);
+    layoutBubbleLayer();
+  }, lifetime + 400);
 }
+
+window.addEventListener("resize", layoutBubbleLayer);
 
 /* Animations w/ variance */
 function setState(id, state) {
@@ -9699,7 +9848,9 @@ async function playGoblinAction(slot, action, options) {
       if (options.homeOnEnd) {
         cleanupGoblinSlot(slot);
         slot.wrap.dataset.home = "true";
+        slot.wrap.dataset.specialist = "false";
         slot.el.dataset.state = "home";
+        slot.tag.textContent = slot.personality || slot.variant;
         clearThinkingBubble("goblin#" + slot.index);
       } else if (options.loop) {
         holdGoblinStanding(slot);
@@ -9716,12 +9867,124 @@ function goHomeGoblinSlot(slot, delayMs) {
   const delay = Math.max(0, delayMs || 0);
   slot.goHomeTimer = setTimeout(() => {
     slot.goHomeTimer = 0;
+    clearAllTextBubbles();
     playGoblinAction(slot, "go-home", { homeOnEnd: true, state: "idle" });
   }, delay);
 }
 
 function goHomeAllGoblins(delayMs) {
+  clearAllTextBubbles();
   Object.values(goblinByIndex).forEach((slot) => goHomeGoblinSlot(slot, delayMs || 0));
+}
+
+let goblinExplosionToken = 0;
+
+function hideGoblinExplosion() {
+  goblinExplosionToken += 1;
+  if (goblinExplosion) goblinExplosion.classList.remove("active");
+  if (goblinExplosionCtx && goblinExplosion) {
+    goblinExplosionCtx.clearRect(0, 0, goblinExplosion.width, goblinExplosion.height);
+  }
+}
+
+function goblinSlotsForSpecialistMapping() {
+  const slots = Object.values(goblinByIndex);
+  const visible = slots.filter((slot) => slot && slot.wrap.dataset.home !== "true");
+  return visible.length ? visible : slots;
+}
+
+function specialistSlotForIndex(index) {
+  const slots = goblinSlotsForSpecialistMapping();
+  if (!slots.length) return null;
+  return slots[Math.abs(index || 0) % slots.length];
+}
+
+function resetGoblinSpecialistPresentation() {
+  hideGoblinExplosion();
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
+  Object.values(goblinByIndex).forEach((slot) => {
+    slot.wrap.dataset.specialist = "false";
+    slot.tag.textContent = slot.personality || slot.variant;
+  });
+}
+
+function markGoblinSpecialists(count) {
+  const slots = goblinSlotsForSpecialistMapping();
+  if (!slots.length) return;
+  const visible = Math.min(Math.max(1, count || 1), slots.length);
+  Object.values(goblinByIndex).forEach((slot) => {
+    slot.wrap.dataset.specialist = "false";
+  });
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
+  for (let i = 0; i < visible; i++) {
+    const slot = specialistSlotForIndex(i);
+    if (!slot) continue;
+    slot.wrap.dataset.specialist = "true";
+    slot.tag.textContent = "specialist";
+    if (slot.el.dataset.state !== "winner") slot.el.dataset.state = "active";
+    specialistByIndex[i] = slot;
+  }
+}
+
+async function playGoblinExplosion() {
+  if (!goblinExplosion || !goblinExplosionCtx) return;
+  const token = ++goblinExplosionToken;
+  const sheet = GOBLIN_EXPLOSION_SHEET;
+  try {
+    const image = await loadGoblinSheet(sheet.src);
+    if (token !== goblinExplosionToken) return;
+    goblinExplosion.classList.add("active");
+    const frameW = image.naturalWidth / sheet.cols;
+    const frameH = image.naturalHeight / sheet.rows;
+    const drawFrame = (frame) => {
+      const col = frame % sheet.cols;
+      const row = Math.floor(frame / sheet.cols);
+      const dw = goblinExplosion.width;
+      const dh = goblinExplosion.height;
+      const scale = Math.min(dw / frameW, dh / frameH);
+      const drawW = frameW * scale;
+      const drawH = frameH * scale;
+      const dx = (dw - drawW) / 2;
+      const dy = (dh - drawH) / 2;
+      goblinExplosionCtx.clearRect(0, 0, dw, dh);
+      goblinExplosionCtx.imageSmoothingEnabled = true;
+      goblinExplosionCtx.drawImage(
+        image,
+        col * frameW,
+        row * frameH,
+        frameW,
+        frameH,
+        dx,
+        dy,
+        drawW,
+        drawH,
+      );
+    };
+    const frameMs = 1000 / Math.max(1, sheet.fps || 12);
+    const startedAt = performance.now();
+    const tick = (ts) => {
+      if (token !== goblinExplosionToken) return;
+      const frame = Math.min(sheet.totalFrames - 1, Math.floor((ts - startedAt) / frameMs));
+      drawFrame(frame);
+      if (frame < sheet.totalFrames - 1) {
+        requestAnimationFrame(tick);
+      } else {
+        setTimeout(() => {
+          if (token === goblinExplosionToken) hideGoblinExplosion();
+        }, 180);
+      }
+    };
+    requestAnimationFrame(tick);
+  } catch {
+    hideGoblinExplosion();
+  }
+}
+
+function playGoblinSpecialistTransition(count) {
+  playGoblinExplosion();
+  setTimeout(() => markGoblinSpecialists(count), 260);
 }
 
 /* Live "thinking" bubbles (one per slot, updated in place) */
@@ -9742,9 +10005,11 @@ function resolveThinkingTarget(slot) {
 function updateThinkingBubble(slot, text) {
   const target = resolveThinkingTarget(slot);
   if (!target) return;
-  if (slot.indexOf("goblin#") === 0) {
+  if (slot.indexOf("goblin#") === 0 || slot.indexOf("specialist#") === 0) {
     const idx = +slot.slice("goblin#".length);
-    const goblin = goblinByIndex[idx] || goblinByIndex[idx % Math.max(1, Object.keys(goblinByIndex).length)];
+    const goblin = slot.indexOf("specialist#") === 0
+      ? specialistSlotForIndex(+slot.slice("specialist#".length))
+      : goblinByIndex[idx] || goblinByIndex[idx % Math.max(1, Object.keys(goblinByIndex).length)];
     if (goblin && goblin.wrap.dataset.home !== "true" && goblin.el.dataset.action !== "argue") {
       playGoblinAction(goblin, "argue", { loop: true, durationMs: 1600 });
     }
@@ -9767,22 +10032,38 @@ function clearThinkingBubble(slot) {
   if (b) {
     b.remove();
     delete thinkingBubbles[slot];
+    layoutBubbleLayer();
   }
 }
 function clearAllThinkingBubbles() {
   Object.keys(thinkingBubbles).forEach(clearThinkingBubble);
 }
+
+function clearAllTextBubbles() {
+  activeBubbles.splice(0).forEach((bubble) => bubble.remove());
+  Object.keys(thinkingBubbles).forEach((slot) => {
+    const bubble = thinkingBubbles[slot];
+    if (bubble) bubble.remove();
+    delete thinkingBubbles[slot];
+  });
+  bubbleLayer.querySelectorAll(".bubble,.think-bubble").forEach((bubble) => bubble.remove());
+  layoutBubbleLayer();
+}
 function renderGoblinSlots(packSize) {
   Object.values(goblinByIndex).forEach(cleanupGoblinSlot);
+  hideGoblinExplosion();
   goblinPile.innerHTML = "";
   Object.keys(goblinByIndex).forEach(k => delete goblinByIndex[k]);
   Object.keys(goblinByLootId).forEach(k => delete goblinByLootId[k]);
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
   const visible = Math.max(1, Math.floor(packSize || 1));
   for (let i = 0; i < visible; i++) {
     const variant = pickGoblinVariant();
     const wrap = document.createElement("div");
     wrap.className = "goblin-wrap";
     wrap.dataset.home = "true";
+    wrap.dataset.specialist = "false";
     const div = document.createElement("div");
     div.className = "creature goblin goblin-sprite-animated";
     div.dataset.state = "home";
@@ -9834,34 +10115,6 @@ function renderGoblinSlots(packSize) {
 
 function setGoblinAll(state) {
   Object.values(goblinByIndex).forEach(g => g.el.dataset.state = state);
-}
-
-function renderSpecialistSlots(count) {
-  Object.values(goblinByIndex).forEach(cleanupGoblinSlot);
-  goblinPile.innerHTML = "";
-  Object.keys(goblinByIndex).forEach(k => delete goblinByIndex[k]);
-  Object.keys(goblinByLootId).forEach(k => delete goblinByLootId[k]);
-  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
-  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
-  const visible = Math.min(Math.max(1, count || 1), 3);
-  for (let i = 0; i < visible; i++) {
-    const wrap = document.createElement("div");
-    wrap.className = "goblin-wrap";
-    const div = document.createElement("div");
-    div.className = "creature goblin";
-    div.dataset.state = "idle";
-    div.style.setProperty("--sway-dur", (3 + Math.random() * 2.5).toFixed(2) + "s");
-    div.style.setProperty("--sway-x", irand(2,4) + "px");
-    div.style.setProperty("--sway-delay", (-Math.random() * 3).toFixed(2) + "s");
-    div.innerHTML = '<span class="emoji">🧐</span>';
-    const tag = document.createElement("span");
-    tag.className = "personality";
-    tag.textContent = "specialist";
-    wrap.appendChild(div);
-    wrap.appendChild(tag);
-    goblinPile.appendChild(wrap);
-    specialistByIndex[i] = { el: div, tag, lootId: null };
-  }
 }
 
 function resetCreatures() {
@@ -10906,10 +11159,8 @@ async function handleStep(step, opts) {
       if (slot && passed) {
         slot.el.dataset.state = "winner";
         dispatchBubble(slot.el, "👑 winner · " + v.score.toFixed(2) + " shinies", "win");
-        goHomeGoblinSlot(slot, 2600);
       } else if (slot && !passed) {
         slot.el.dataset.state = "fail";
-        goHomeGoblinSlot(slot, 1400);
       }
       break;
     }
@@ -10925,8 +11176,8 @@ async function handleStep(step, opts) {
         break;
       }
       setTicker("clusters: " + names, true);
-      // Replace the failed pack with specialist 🧐 sprites
-      renderSpecialistSlots(step.clusters.length);
+      if (replay) markGoblinSpecialists(step.clusters.length);
+      else playGoblinSpecialistTransition(step.clusters.length);
       break;
     }
     case "specialist:cluster:empty":
@@ -10938,8 +11189,10 @@ async function handleStep(step, opts) {
       dispatchBubble($("c-troll"), "specialist error: " + String(step.message || "").slice(0, 90), "fail");
       break;
     case "specialist:spawn": {
+      specialistByIndex[step.index] = specialistSlotForIndex(step.index);
       const slot = specialistByIndex[step.index];
       if (slot) {
+        slot.wrap.dataset.specialist = "true";
         slot.tag.textContent = "specialist";
         slot.el.dataset.state = "active";
         if (!replay) {
@@ -10951,7 +11204,8 @@ async function handleStep(step, opts) {
       break;
     }
     case "specialist:done": {
-      const slot = specialistByIndex[step.index];
+      const slot = specialistByIndex[step.index] || specialistSlotForIndex(step.index);
+      if (slot) specialistByIndex[step.index] = slot;
       specialistByLootId[step.lootId] = slot;
       clearThinkingBubble("specialist#" + step.index);
       if (!replay && slot) {
@@ -10961,8 +11215,9 @@ async function handleStep(step, opts) {
       break;
     }
     case "specialist:verdict": {
-      const slot = specialistByIndex[step.index];
+      const slot = specialistByIndex[step.index] || specialistSlotForIndex(step.index);
       if (slot) {
+        specialistByIndex[step.index] = slot;
         if (step.verdict.passed) {
           slot.el.dataset.state = "winner";
           dispatchBubble(slot.el, "👑 specialist won · " + step.verdict.score.toFixed(2), "win");
@@ -11014,6 +11269,7 @@ async function handleStep(step, opts) {
       break;
     case "rite:done":
       setTicker("rite complete · outcome=" + step.outcome);
+      goHomeAllGoblins(1200);
       break;
   }
 }
