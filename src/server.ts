@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import type { Server } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,10 @@ import {
   normalizeAddonId,
   setAddonEnabled,
 } from "./addons.js";
+import {
+  normalizeChatMessages,
+  runSingleGoblinChat,
+} from "./chat.js";
 import {
   MAX_PEERS,
   MAX_TEAM_MEMBERS,
@@ -32,8 +37,19 @@ import {
   signCountryPayload,
   verifyCountryPayload,
 } from "./country-identity.js";
+import {
+  chatRecordPreview,
+  importChatRecords,
+  scanChatImports,
+  type ChatImportSource,
+  vectorizeStoredArtifacts,
+} from "./chat-import.js";
+import { ingestContextPath } from "./context-ingest.js";
+import { findRelevantArtifactsEmbedded } from "./embeddings.js";
 import { verifyHmac, verifyInbox } from "./federation.js";
+import { makeGoblin } from "./creatures.js";
 import { performRite, type RiteStep } from "./rite.js";
+import { callCreature } from "./openai-client.js";
 import { loadRewardPlugin } from "./reward-plugin.js";
 import {
   appendRunEvent,
@@ -56,14 +72,16 @@ import {
   type FriendRecord,
   type FriendRequest,
   type InboxMessage,
+  type Loot,
   type OutputFormat,
   type Personality,
   type ProviderConfig,
 } from "./types.js";
 import { executePlan, type PlanExecutionEvent } from "./plan-executor.js";
 import { planTask } from "./planner.js";
-import { findRelevantArtifacts } from "./artifact.js";
+import { renderArtifactContext } from "./artifact.js";
 import { exportRunAsMasTrace } from "./trace-export.js";
+import { measureDrift } from "./drift.js";
 import {
   normalizeSolanaAddress,
   normalizeSolanaSignature,
@@ -118,6 +136,11 @@ export interface ServeOptions {
   port: number;
 }
 
+export interface ServeHandle {
+  url: string;
+  close: () => Promise<void>;
+}
+
 interface RunState {
   record: RunRecord;
   subscribers: Set<Response>;
@@ -161,6 +184,49 @@ function runSummary(record: RunRecord): Omit<RunRecord, "events"> & { eventCount
     ...rest,
     eventCount: record.nextSeq ?? events.length,
   };
+}
+
+function contextArtifactPayload(artifact: Artifact): Record<string, unknown> {
+  return {
+    id: artifact.id,
+    riteId: artifact.riteId,
+    task: artifact.task,
+    ref: artifact.evidence.find((e) => e.kind === "file")?.ref ?? artifact.riteId,
+    claim: artifact.claims[0]?.text ?? artifact.task,
+    keywords: artifact.keywords,
+    timestamp: artifact.timestamp,
+  };
+}
+
+function apiLimit(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function apiChatSource(raw: unknown): ChatImportSource | undefined {
+  if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === "codex" || value === "chatgpt" || value === "folder") return value;
+  throw new Error("source must be codex, chatgpt, or folder");
+}
+
+function apiStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  }
+  if (typeof raw === "string") {
+    return raw
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function sanitizeRunPayload(body: Record<string, unknown>): Record<string, unknown> {
@@ -287,7 +353,7 @@ function cspHeaderForRequest(): string {
   ].join("; ");
 }
 
-export async function serve(opts: ServeOptions): Promise<void> {
+export async function serve(opts: ServeOptions): Promise<ServeHandle> {
   let warren = await loadWarren(opts.cwd);
   await ensureCountryIdentity(warren.root);
   ensureCountryDefaults(warren);
@@ -331,6 +397,10 @@ export async function serve(opts: ServeOptions): Promise<void> {
   });
 
   app.get("/", async (_req, res) => renderHome(warren, runs, res));
+  app.get("/tank", async (_req, res) => renderHome(warren, runs, res));
+  app.get("/chat", (_req, res) =>
+    res.send(layout("Single Goblin Chat", chatPage())),
+  );
   app.get("/rite/new", (_req, res) =>
     res.send(layout("New Rite", newRiteForm())),
   );
@@ -345,12 +415,42 @@ export async function serve(opts: ServeOptions): Promise<void> {
   app.post("/api/rite", async (req, res) =>
     startRiteRun(warren, runs, runDir, req, res),
   );
+  app.post("/api/goblin/single", async (req, res) =>
+    startSingleGoblinRun(warren, req, res),
+  );
   app.post("/api/thesis", async (req, res) =>
     startThesisRun(warren, runs, runDir, req, res),
   );
   app.post("/api/plan", async (req, res) =>
     startPlanRun(warren, runs, runDir, req, res),
   );
+  app.post("/api/chat", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const messages = normalizeChatMessages(body.messages);
+    if (messages.length === 0 || messages[messages.length - 1].role !== "user") {
+      res.status(400).json({ error: "messages must end with a user message" });
+      return;
+    }
+    const personality =
+      typeof body.personality === "string"
+        ? (body.personality as Personality)
+        : "chipper";
+    const rawMaxOutputTokens = Number(body.maxOutputTokens ?? 900);
+    const maxOutputTokens = Number.isFinite(rawMaxOutputTokens)
+      ? Math.max(64, Math.min(4000, Math.floor(rawMaxOutputTokens)))
+      : 900;
+    try {
+      const result = await runSingleGoblinChat({
+        messages,
+        personality,
+        maxOutputTokens,
+        hoard: warren.hoard,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
   app.get("/api/rite/:runId/stream", (req, res) =>
     streamRiteRun(runs, req, res),
   );
@@ -448,6 +548,114 @@ export async function serve(opts: ServeOptions): Promise<void> {
     const limit = Number(req.query.limit ?? 50);
     const all = (await warren.hoard.allArtifacts()).sort((a, b) => b.timestamp - a.timestamp);
     res.json(all.slice(0, Math.max(1, Math.min(500, limit))));
+  });
+  app.post("/api/context/ingest", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const inputPath = typeof body.path === "string" ? body.path.trim() : "";
+    if (!inputPath) {
+      res.status(400).json({ error: "path is required" });
+      return;
+    }
+    try {
+      const result = await ingestContextPath({
+        root: warren.root,
+        hoard: warren.hoard,
+        inputPath,
+        limit: apiLimit(body.limit, 80, 1, 500),
+      });
+      res.json({
+        artifacts: result.artifacts.map(contextArtifactPayload),
+        skipped: result.skipped,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  app.post("/api/context/search", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const query = typeof body.query === "string" ? body.query.trim() : "";
+    if (!query) {
+      res.status(400).json({ error: "query is required" });
+      return;
+    }
+    try {
+      const all = await warren.hoard.allArtifacts();
+      const matches = await findRelevantArtifactsEmbedded({
+        artifacts: all,
+        queryText: query,
+        limit: apiLimit(body.limit, 10, 1, 100),
+        hoard: warren.hoard,
+      });
+      res.json({
+        artifacts: matches.map(contextArtifactPayload),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  app.post("/api/context/chats/scan", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const result = await scanChatImports({
+        source: apiChatSource(body.source),
+        path: typeof body.path === "string" && body.path.trim() ? body.path.trim() : undefined,
+        query: typeof body.query === "string" && body.query.trim() ? body.query.trim() : undefined,
+        since: typeof body.since === "string" && body.since.trim() ? body.since.trim() : undefined,
+        limit: apiLimit(body.limit, 50, 1, 500),
+      });
+      res.json({
+        records: result.records.map(chatRecordPreview),
+        skipped: result.skipped,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  app.post("/api/context/chats/import", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = apiStringArray(body.ids);
+    const importAll = body.all === true || body.all === "true";
+    if (!importAll && ids.length === 0) {
+      res.status(400).json({ error: "all=true or ids is required" });
+      return;
+    }
+    try {
+      const scan = await scanChatImports({
+        source: apiChatSource(body.source),
+        path: typeof body.path === "string" && body.path.trim() ? body.path.trim() : undefined,
+        query: typeof body.query === "string" && body.query.trim() ? body.query.trim() : undefined,
+        since: typeof body.since === "string" && body.since.trim() ? body.since.trim() : undefined,
+        limit: apiLimit(body.limit, 50, 1, 500),
+      });
+      const result = await importChatRecords({
+        hoard: warren.hoard,
+        records: scan.records,
+        ids: importAll ? undefined : ids,
+        vectorize: body.noVectorize !== true && body.noVectorize !== "true",
+        summarize: body.summarize === true || body.summarize === "true",
+      });
+      res.json({
+        records: result.records.map(chatRecordPreview),
+        artifacts: result.artifacts.map(contextArtifactPayload),
+        vectorized: result.vectorized,
+        skipped: [...scan.skipped, ...result.skipped.map((item) => ({ path: item.id, reason: item.reason }))],
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  app.post("/api/context/vectorize", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const result = await vectorizeStoredArtifacts({
+        hoard: warren.hoard,
+        missingOnly: body.missingOnly === true || body.missingOnly === "true",
+        limit: body.limit === undefined ? undefined : apiLimit(body.limit, 100, 1, 500),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
   app.get("/api/warren/stats", async (_req, res) => {
     const [loot, rites] = await Promise.all([
@@ -1265,15 +1473,94 @@ export async function serve(opts: ServeOptions): Promise<void> {
       .send(layout("Not Found", "<h1>404</h1><p>The Hoard does not contain that.</p>")),
   );
 
-  await new Promise<void>((resolve) => {
-    app.listen(opts.port, () => {
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(opts.port, () => {
+      const address = listening.address();
+      const actualPort =
+        typeof address === "object" && address ? address.port : opts.port;
       process.stdout.write(
-        `Hoard UI listening on http://localhost:${opts.port}/\n` +
+        `Hoard UI listening on http://localhost:${actualPort}/\n` +
           `Warren: ${warren.manifest.name}  (${warren.root})\n`,
       );
-      resolve();
+      resolve(listening);
     });
   });
+  const address = server.address();
+  const actualPort =
+    typeof address === "object" && address ? address.port : opts.port;
+  return {
+    url: `http://localhost:${actualPort}/`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
+async function startSingleGoblinRun(
+  warren: Warren,
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const body = (req.body ?? {}) as {
+    task?: unknown;
+    remember?: unknown;
+    outputFormat?: unknown;
+    maxOutputTokens?: unknown;
+  };
+  if (typeof body.task !== "string" || body.task.trim().length === 0) {
+    res.status(400).json({ error: "task is required" });
+    return;
+  }
+  const task = body.task.trim();
+  const remember = body.remember !== false;
+  const outputFormat = normalizeOutputFormat(
+    body.outputFormat ?? warren.manifest.provider?.outputFormat,
+  );
+  const maxOutputTokens =
+    typeof body.maxOutputTokens === "number" && body.maxOutputTokens > 0
+      ? body.maxOutputTokens
+      : undefined;
+  const parentArtifacts = remember
+    ? await findRelevantArtifactsEmbedded({
+        artifacts: await warren.hoard.allArtifacts(),
+        queryText: task,
+        limit: 3,
+        hoard: warren.hoard,
+      })
+    : [];
+  const prompt = parentArtifacts.length
+    ? `${parentArtifacts.map(renderArtifactContext).join("\n\n")}\n\nTask:\n${task}`
+    : task;
+  try {
+    const creature = makeGoblin();
+    const { text, usage } = await callCreature(creature, prompt, {
+      outputFormat,
+      maxOutputTokens,
+    });
+    const drift = measureDrift(text);
+    const loot: Loot = {
+      id: "",
+      creatureKind: "goblin",
+      personality: creature.personality,
+      model: creature.model,
+      prompt,
+      output: text,
+      timestamp: Date.now(),
+      drift,
+      usage,
+    };
+    const lootId = await warren.hoard.stash(loot);
+    res.json({
+      mode: "single",
+      output: text,
+      lootId,
+      usage,
+      parentArtifactIds: parentArtifacts.map((a) => a.id),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 async function startRiteRun(
@@ -1418,7 +1705,12 @@ async function startRiteRun(
   }
   if (remember) {
     const all = await warren.hoard.allArtifacts();
-    const auto = findRelevantArtifacts(all, body.task, 3).filter(
+    const auto = (await findRelevantArtifactsEmbedded({
+      artifacts: all,
+      queryText: body.task,
+      limit: 3,
+      hoard: warren.hoard,
+    })).filter(
       (a) => !parentArtifacts.some((p) => p.id === a.id),
     );
     parentArtifacts.push(...auto);
@@ -1602,7 +1894,12 @@ async function startPlanRun(
   }
   if (remember) {
     const all = await warren.hoard.allArtifacts();
-    const auto = findRelevantArtifacts(all, body.task, 3).filter(
+    const auto = (await findRelevantArtifactsEmbedded({
+      artifacts: all,
+      queryText: body.task,
+      limit: 3,
+      hoard: warren.hoard,
+    })).filter(
       (a) => !parents.some((p) => p.id === a.id),
     );
     parents.push(...auto);
@@ -2401,6 +2698,30 @@ async function renderHome(
   res.send(tankHtml(warren.manifest.name, loot.length, rites.length, drift));
 }
 
+async function renderGoblinMode(
+  warren: Warren,
+  runs: Map<string, RunState>,
+  res: Response,
+): Promise<void> {
+  const [rites, loot, artifacts] = await Promise.all([
+    warren.hoard.allRites(),
+    warren.hoard.allLoot(),
+    warren.hoard.allArtifacts(),
+  ]);
+  const driftSum = loot.reduce((s, l) => s + l.drift.driftRate, 0);
+  const drift = loot.length ? driftSum / loot.length : 0;
+  res.send(
+    goblinModeHtml({
+      warrenName: warren.manifest.name,
+      lootCount: loot.length,
+      riteCount: rites.length,
+      artifactCount: artifacts.length,
+      runCount: runs.size,
+      drift,
+    }),
+  );
+}
+
 async function renderRite(
   warren: Warren,
   req: Request,
@@ -2720,6 +3041,7 @@ function newRiteForm(): string {
              <option value="chipper">chipper</option>
              <option value="stoic">stoic</option>
              <option value="feral">feral</option>
+             <option value="goblin_mode">goblin_mode</option>
            </select>
          </label>
          &nbsp;<label><input type="checkbox" name="noFallback"> skip Ogre fallback</label>
@@ -2773,8 +3095,941 @@ function newRiteForm(): string {
   `;
 }
 
+function chatPage(): string {
+  return `
+    <p><a href="/">&larr; Tank</a> · <a href="/runs">Runs</a></p>
+    <h1>Single Goblin Chat</h1>
+    <style>
+      .chat-shell { display: grid; gap: .85rem; max-width: 860px; }
+      .chat-toolbar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+      .chat-toolbar label { display: inline-flex; align-items: center; gap: .4rem; }
+      .chat-log { min-height: 360px; max-height: 58vh; overflow-y: auto; background: #0a0e08; border: 1px solid #1f2d18; padding: .9rem; }
+      .chat-msg { margin: 0 0 .85rem; padding: .7rem .8rem; border-left: 3px solid #2a3d22; background: rgba(20, 32, 26, .55); white-space: pre-wrap; word-break: break-word; }
+      .chat-msg.user { border-left-color: #8fcf52; }
+      .chat-msg.assistant { border-left-color: #5a7042; }
+      .chat-role { display: block; color: #5a7042; font-size: 11px; text-transform: uppercase; margin-bottom: .25rem; }
+      .chat-compose { display: grid; gap: .5rem; }
+      .chat-compose textarea, .chat-toolbar select, .chat-toolbar input { background: #0a0e08; color: #d8efb6; border: 1px solid #2a3d22; border-radius: 3px; padding: .55rem; font: inherit; }
+      .chat-actions { display: flex; gap: .5rem; align-items: center; }
+      .chat-actions button { background: #1f3a14; color: #d8efb6; border: 1px solid #416b26; border-radius: 3px; padding: .5rem .8rem; font: inherit; cursor: pointer; }
+      .chat-actions button.secondary { background: #14201a; border-color: #2a3d22; }
+      .chat-actions button:disabled { opacity: .55; cursor: wait; }
+      .chat-offer { display: none; border: 1px solid #2a3d22; background: #101a12; padding: .75rem; }
+      .chat-offer.open { display: flex; gap: .75rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+      .chat-offer button { background: #1f3a14; color: #d8efb6; border: 1px solid #416b26; border-radius: 3px; padding: .45rem .7rem; font: inherit; cursor: pointer; }
+      .chat-status { color: #5a7042; }
+    </style>
+    <div class="chat-shell">
+      <div class="chat-toolbar">
+        <label>Personality
+          <select id="chat-personality">
+            <option value="chipper">chipper</option>
+            <option value="nerdy">nerdy</option>
+            <option value="stoic">stoic</option>
+            <option value="cynical">cynical</option>
+            <option value="feral">feral</option>
+            <option value="goblin_mode">goblin_mode</option>
+          </select>
+        </label>
+        <label>Max tokens
+          <input id="chat-max" type="number" min="64" max="4000" value="900">
+        </label>
+        <span class="chat-status" id="chat-status">ready</span>
+      </div>
+      <div class="chat-log" id="chat-log" aria-live="polite"></div>
+      <div class="chat-offer" id="chat-offer">
+        <span id="chat-offer-text"></span>
+        <button id="chat-offer-run" type="button">Run Goblintown</button>
+      </div>
+      <form class="chat-compose" id="chat-form">
+        <textarea id="chat-input" rows="4" placeholder="Ask the single Goblin anything..." required></textarea>
+        <div class="chat-actions">
+          <button id="chat-send" type="submit">Send</button>
+          <button class="secondary" id="chat-clear" type="button">Clear</button>
+        </div>
+      </form>
+    </div>
+    <script>
+      const messages = [];
+      const log = document.getElementById("chat-log");
+      const form = document.getElementById("chat-form");
+      const input = document.getElementById("chat-input");
+      const send = document.getElementById("chat-send");
+      const clear = document.getElementById("chat-clear");
+      const status = document.getElementById("chat-status");
+      const personality = document.getElementById("chat-personality");
+      const maxTokens = document.getElementById("chat-max");
+      const offer = document.getElementById("chat-offer");
+      const offerText = document.getElementById("chat-offer-text");
+      const offerRun = document.getElementById("chat-offer-run");
+      let offeredTask = "";
+
+      function escHtml(value) {
+        return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+      }
+
+      function renderMessage(message, lootId) {
+        const node = document.createElement("div");
+        node.className = "chat-msg " + message.role;
+        const loot = lootId ? ' <a href="/loot/' + encodeURIComponent(lootId) + '">loot</a>' : "";
+        node.innerHTML = '<span class="chat-role">' + message.role + loot + '</span>' + escHtml(message.content);
+        log.appendChild(node);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function renderGoblintownOffer(nextOffer) {
+        if (!nextOffer || !nextOffer.task) {
+          offer.classList.remove("open");
+          offeredTask = "";
+          return;
+        }
+        offeredTask = nextOffer.task;
+        offerText.textContent = nextOffer.requested
+          ? "Goblintown requested. Start a full pack rite for this prompt?"
+          : "This looks complex enough for the full Goblintown pack.";
+        offer.classList.add("open");
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const content = input.value.trim();
+        if (!content) return;
+        const userMessage = { role: "user", content };
+        messages.push(userMessage);
+        renderMessage(userMessage);
+        input.value = "";
+        send.disabled = true;
+        status.textContent = "thinking";
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages,
+              personality: personality.value,
+              maxOutputTokens: Number(maxTokens.value || 900),
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(body.error || response.statusText);
+          messages.push(body.message);
+          renderMessage(body.message, body.lootId);
+          renderGoblintownOffer(body.goblintownOffer);
+          status.textContent = body.lootId ? "saved " + body.lootId : "ready";
+        } catch (err) {
+          status.textContent = err instanceof Error ? err.message : String(err);
+        } finally {
+          send.disabled = false;
+          input.focus();
+        }
+      });
+
+      clear.addEventListener("click", () => {
+        messages.splice(0, messages.length);
+        log.innerHTML = "";
+        status.textContent = "ready";
+        renderGoblintownOffer(null);
+        input.focus();
+      });
+
+      offerRun.addEventListener("click", async () => {
+        const task = offeredTask.trim();
+        if (!task) return;
+        offerRun.disabled = true;
+        status.textContent = "starting Goblintown";
+        try {
+          const response = await fetch("/api/rite", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              task,
+              packSize: 3,
+              personality: personality.value,
+              remember: true,
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(body.error || response.statusText);
+          status.innerHTML = 'Goblintown running: <a href="/?run=' + encodeURIComponent(body.runId) + '">open run</a>';
+          offer.classList.remove("open");
+        } catch (err) {
+          status.textContent = err instanceof Error ? err.message : String(err);
+        } finally {
+          offerRun.disabled = false;
+        }
+      });
+    </script>
+  `;
+}
+
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+function goblinModeHtml(stats: {
+  warrenName: string;
+  lootCount: number;
+  riteCount: number;
+  artifactCount: number;
+  runCount: number;
+  drift: number;
+}): string {
+  const initial = JSON.stringify(stats);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Goblin Mode · ${esc(stats.warrenName)}</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --mud: #120f08;
+    --peat: #1b160b;
+    --rot: #261d0c;
+    --moss: #8ba34a;
+    --moss-hot: #c4e86a;
+    --bog: #4e5f2a;
+    --bone: #e7dfbd;
+    --ash: #9b8f62;
+    --line: #4b3a16;
+    --bad: #d96f42;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background:
+      radial-gradient(circle at 50% 42%, rgba(139, 163, 74, 0.09), transparent 34%),
+      linear-gradient(180deg, #15130d 0%, var(--mud) 100%);
+    color: var(--bone);
+    font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace;
+  }
+  .goblin-mode-shell {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 32px 18px;
+  }
+  .goblin-mode-core {
+    width: min(880px, 94vw);
+  }
+  h1 {
+    margin: 0 0 28px;
+    text-align: center;
+    font-size: clamp(24px, 4vw, 36px);
+    line-height: 1.1;
+    font-weight: 500;
+    color: var(--bone);
+    letter-spacing: 0;
+    text-transform: lowercase;
+  }
+  .composer {
+    background: rgba(31, 26, 14, 0.92);
+    border: 1px solid rgba(139, 163, 74, 0.22);
+    border-radius: 10px;
+    box-shadow: 0 22px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(231, 223, 189, 0.05);
+    overflow: hidden;
+  }
+  .modebar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border-bottom: 1px solid rgba(139, 163, 74, 0.18);
+    background: rgba(18, 15, 8, 0.52);
+  }
+  .segment {
+    display: inline-grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid rgba(139, 163, 74, 0.32);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .segment button,
+  .send {
+    border: 0;
+    background: transparent;
+    color: var(--ash);
+    font: inherit;
+    padding: 8px 11px;
+    cursor: pointer;
+  }
+  .segment button[aria-pressed="true"] {
+    background: rgba(139, 163, 74, 0.18);
+    color: var(--moss-hot);
+  }
+  .composer-field {
+    position: relative;
+  }
+  .tank-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--ash);
+    user-select: none;
+  }
+  .tank-toggle input { accent-color: var(--moss); }
+  .send {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    border: 1px solid rgba(196, 232, 106, 0.34);
+    border-radius: 8px;
+    color: var(--moss-hot);
+    background: rgba(139, 163, 74, 0.12);
+    min-width: 48px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 142px;
+    resize: vertical;
+    border: 0;
+    outline: 0;
+    padding: 18px 78px 50px 18px;
+    background: transparent;
+    color: var(--bone);
+    font: 16px/1.45 ui-monospace, Menlo, Consolas, monospace;
+  }
+  textarea::placeholder { color: rgba(155, 143, 98, 0.72); }
+  .status-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    border-top: 1px solid rgba(139, 163, 74, 0.16);
+    color: var(--ash);
+    font-size: 12px;
+  }
+  .status-row b { color: var(--moss-hot); font-weight: 500; }
+  .output, .old-tank-box {
+    margin-top: 14px;
+    background: rgba(18, 15, 8, 0.82);
+    border: 1px solid rgba(139, 163, 74, 0.22);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .output[hidden], .old-tank-box[hidden] { display: none; }
+  .panel-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 11px;
+    color: var(--moss-hot);
+    border-bottom: 1px solid rgba(139, 163, 74, 0.18);
+    background: rgba(38, 29, 12, 0.7);
+    font-size: 12px;
+    text-transform: lowercase;
+  }
+  .import-controls {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr) minmax(0, 0.9fr) auto auto auto;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid rgba(139, 163, 74, 0.18);
+  }
+  .import-controls select,
+  .import-controls input[type="text"],
+  .import-controls button {
+    min-width: 0;
+    border: 1px solid rgba(139, 163, 74, 0.28);
+    border-radius: 7px;
+    background: rgba(31, 26, 14, 0.88);
+    color: var(--bone);
+    font: inherit;
+    padding: 7px 9px;
+  }
+  .import-controls button {
+    cursor: pointer;
+    color: var(--moss-hot);
+    background: rgba(139, 163, 74, 0.12);
+  }
+  .import-controls label {
+    grid-column: 1 / -1;
+    color: var(--ash);
+    font-size: 12px;
+  }
+  .chat-import-results {
+    max-height: 190px;
+    overflow: auto;
+    padding: 8px 10px;
+  }
+  .chat-import-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 0;
+    color: var(--bone);
+  }
+  .chat-import-row input { margin-top: 3px; accent-color: var(--moss); }
+  .chat-import-empty {
+    margin: 0;
+    color: var(--ash);
+    white-space: pre-wrap;
+  }
+  pre {
+    margin: 0;
+    padding: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--bone);
+    max-height: 46vh;
+    overflow: auto;
+  }
+  .tank-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    min-height: 210px;
+  }
+  .town-field {
+    position: relative;
+    min-height: 210px;
+    border-right: 1px solid rgba(139, 163, 74, 0.18);
+    background:
+      linear-gradient(180deg, rgba(78, 95, 42, 0.14), transparent 56%),
+      radial-gradient(circle at 50% 72%, rgba(139, 163, 74, 0.16), transparent 42%);
+  }
+  .town-title {
+    position: absolute;
+    left: 16px;
+    top: 14px;
+    color: rgba(231, 223, 189, 0.42);
+    font-size: 12px;
+  }
+  .node-dot {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bog);
+    border: 1px solid var(--moss-hot);
+    box-shadow: 0 0 22px rgba(196, 232, 106, 0.12);
+  }
+  .node-dot:nth-child(2) { left: 35%; top: 34%; }
+  .node-dot:nth-child(3) { left: 52%; top: 52%; }
+  .node-dot:nth-child(4) { left: 66%; top: 38%; }
+  .node-dot.running { background: var(--moss-hot); }
+  .node-dot.done { background: #58752e; }
+  .node-dot.failed { background: var(--bad); }
+  .tank-log { max-height: 210px; }
+  .footer-links {
+    margin-top: 12px;
+    text-align: center;
+    color: var(--ash);
+    font-size: 12px;
+  }
+  .footer-links a { color: var(--moss-hot); }
+  @media (max-width: 720px) {
+    .import-controls { grid-template-columns: 1fr; }
+    .tank-grid { grid-template-columns: 1fr; }
+    .town-field { border-right: 0; border-bottom: 1px solid rgba(139, 163, 74, 0.18); }
+  }
+</style>
+</head>
+<body>
+<main class="goblin-mode-shell">
+  <section class="goblin-mode-core">
+    <h1>single goblin fallback</h1>
+    <form class="composer" id="goblin-form">
+      <div class="modebar">
+        <div class="segment" role="group" aria-label="Run mode">
+          <button id="mode-single" type="button" aria-pressed="true">Single Goblin</button>
+          <button id="mode-town" type="button" aria-pressed="false">Goblintown</button>
+        </div>
+        <label class="tank-toggle" title="Open the full Tank for Goblintown runs">
+          <input id="old-tank-enabled" type="checkbox" disabled>
+          Tank
+        </label>
+      </div>
+      <div class="composer-field">
+        <textarea id="goblin-input" autocomplete="off" spellcheck="true" placeholder="Do anything"></textarea>
+        <button class="send" id="goblin-send" type="submit" title="Send (Cmd/Ctrl+Enter)" aria-label="Send prompt">run</button>
+      </div>
+      <div class="status-row">
+        <span>${esc(stats.warrenName)}</span>
+        <span>loot <b>${stats.lootCount}</b></span>
+        <span>rites <b>${stats.riteCount}</b></span>
+        <span>artifacts <b>${stats.artifactCount}</b></span>
+        <span>runs <b>${stats.runCount}</b></span>
+        <span>drift <b>${stats.drift.toFixed(4)}</b></span>
+      </div>
+    </form>
+
+    <section class="old-tank-box" id="old-tank-box" hidden>
+      <div class="panel-title"><span>tank</span><span id="tank-state">idle</span></div>
+      <div class="tank-grid">
+        <div class="town-field" aria-hidden="true">
+          <div class="town-title">goblintown</div>
+          <span class="node-dot" id="dot-planner"></span>
+          <span class="node-dot" id="dot-worker"></span>
+          <span class="node-dot" id="dot-scribe"></span>
+        </div>
+        <pre class="tank-log" id="tank-log">(waiting)</pre>
+      </div>
+    </section>
+
+    <section class="output" id="output-panel" hidden>
+      <div class="panel-title"><span id="output-title">output</span><span id="output-meta"></span></div>
+      <pre id="output-text"></pre>
+    </section>
+
+    <section class="output chat-import-panel" id="chat-import-panel">
+      <div class="panel-title"><span>chat hoard import</span><span id="chat-import-count">0 selected</span></div>
+      <div class="import-controls">
+        <select id="chat-source" aria-label="Chat source">
+          <option value="codex">Codex</option>
+          <option value="chatgpt">ChatGPT export</option>
+          <option value="folder">Folder</option>
+        </select>
+        <input id="chat-path" type="text" placeholder="optional path or export zip">
+        <input id="chat-query" type="text" placeholder="filter shiny words">
+        <button id="chat-scan" type="button">Scan</button>
+        <button id="chat-import-selected" type="button">Import Selected</button>
+        <button id="chat-import-all" type="button">Import All</button>
+        <label><input id="chat-summarize" type="checkbox"> AI summarize during import</label>
+      </div>
+      <div class="chat-import-results" id="chat-import-results">
+        <p class="chat-import-empty">Scan previous chats, then import selected or import the whole pile.</p>
+      </div>
+    </section>
+
+    <p class="footer-links">
+      slash commands: /ask, /run, /town, /tank, /plan, /context ingest, /context search, /context scan chats, /context import chats, /history, /help ·
+      <a href="/tank">legacy Tank</a> · <a href="/runs">runs</a>
+    </p>
+  </section>
+</main>
+<script>
+const INITIAL = ${initial};
+const $ = (id) => document.getElementById(id);
+let selectedMode = "single";
+let activeStream = null;
+let lastChatScan = [];
+
+function setMode(mode) {
+  selectedMode = mode === "town" ? "town" : "single";
+  $("mode-single").setAttribute("aria-pressed", selectedMode === "single" ? "true" : "false");
+  $("mode-town").setAttribute("aria-pressed", selectedMode === "town" ? "true" : "false");
+  $("old-tank-enabled").disabled = selectedMode !== "town";
+  if (selectedMode !== "town") $("old-tank-enabled").checked = false;
+}
+
+function showOutput(title, text, meta) {
+  $("output-panel").hidden = false;
+  $("output-title").textContent = title;
+  $("output-meta").textContent = meta || "";
+  $("output-text").textContent = text || "";
+}
+
+function appendTank(text) {
+  const log = $("tank-log");
+  log.textContent = log.textContent === "(waiting)" ? text : log.textContent + "\\n" + text;
+  log.scrollTop = log.scrollHeight;
+}
+
+function parseLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("/")) {
+    return { kind: "run", mode: selectedMode, tank: selectedMode === "town" && $("old-tank-enabled").checked, task: trimmed, args: trimmed ? [trimmed] : [] };
+  }
+  const parts = trimmed.match(/"[^"]*"|'[^']*'|\\S+/g) || [];
+  const command = (parts.shift() || "/run").slice(1).toLowerCase();
+  const tank = parts.includes("--tank") || command === "tank";
+  const args = parts.filter((p) => p !== "--tank").map((p) => p.replace(/^["']|["']$/g, ""));
+  const task = args.join(" ").trim();
+  if (command === "ask" || command === "single" || command === "goblin") return { kind: "ask", mode: "single", tank: false, task, args };
+  if (command === "town" || command === "goblintown" || command === "tank" || command === "plan") return { kind: command, mode: "town", tank, task, args };
+  return { kind: command, mode: selectedMode, tank: selectedMode === "town" && ($("old-tank-enabled").checked || tank), task, args };
+}
+
+async function showHistory() {
+  const res = await fetch("/api/runs");
+  if (!res.ok) throw new Error(await res.text());
+  const runs = await res.json();
+  const lines = runs.slice(0, 10).map((r) => r.runId + " · " + (r.mode || "rite") + " · " + (r.status || (r.done ? "done" : "running")) + " · " + r.task);
+  showOutput("history", lines.length ? lines.join("\\n") : "(no runs yet)", "");
+}
+
+function showHelp() {
+  showOutput("help", [
+    "/ask <task>        Single Goblin",
+    "/run <task>        current selected mode",
+    "/town <task>       Goblintown planner DAG",
+    "/tank <task>       Goblintown with live Tank box",
+    "/context ingest <path>    import old conversations/projects",
+    "/context search <query>   search imported context",
+    "/context scan chats       scan Codex or ChatGPT chat hoard",
+    "/context import chats --all    import scanned chats as DAG memory",
+    "/context vectorize --missing-only    precompute missing embeddings",
+    "/history           recent runs",
+    "/help              this list",
+  ].join("\\n"), "");
+}
+
+function commandPositionals(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      if (args[i + 1] && !args[i + 1].startsWith("--")) i++;
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+function commandLimit(args, fallback) {
+  const idx = args.indexOf("--limit");
+  if (idx < 0 || !args[idx + 1]) return fallback;
+  const n = Number(args[idx + 1]);
+  return Number.isFinite(n) ? Math.max(1, Math.min(500, Math.floor(n))) : fallback;
+}
+
+function commandFlag(args, name) {
+  const idx = args.indexOf("--" + name);
+  return idx >= 0 && args[idx + 1] && !args[idx + 1].startsWith("--") ? args[idx + 1] : "";
+}
+
+function commandHasFlag(args, name) {
+  return args.includes("--" + name);
+}
+
+function contextChatPayloadFromArgs(args) {
+  return {
+    source: commandFlag(args, "source") || "codex",
+    path: commandFlag(args, "path") || undefined,
+    query: commandFlag(args, "query") || undefined,
+    since: commandFlag(args, "since") || undefined,
+    limit: commandLimit(args, 50),
+  };
+}
+
+function chatImportPayload() {
+  const path = $("chat-path").value.trim();
+  const query = $("chat-query").value.trim();
+  return {
+    source: $("chat-source").value,
+    path: path || undefined,
+    query: query || undefined,
+    limit: 50,
+  };
+}
+
+function selectedChatIds() {
+  return Array.from(document.querySelectorAll(".chat-import-choice:checked")).map((input) => input.value);
+}
+
+function updateChatSelectedCount() {
+  $("chat-import-count").textContent = selectedChatIds().length + " selected";
+}
+
+function setChatImportText(text) {
+  const box = $("chat-import-results");
+  box.innerHTML = "";
+  const p = document.createElement("p");
+  p.className = "chat-import-empty";
+  p.textContent = text;
+  box.appendChild(p);
+  updateChatSelectedCount();
+}
+
+function renderChatScan(records, skipped) {
+  lastChatScan = records || [];
+  const box = $("chat-import-results");
+  box.innerHTML = "";
+  if (!lastChatScan.length) {
+    setChatImportText(skipped && skipped.length ? "No visible chats found. Skipped " + skipped.length + " path(s)." : "No visible chats found.");
+    return;
+  }
+  for (const record of lastChatScan) {
+    const row = document.createElement("label");
+    row.className = "chat-import-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "chat-import-choice";
+    checkbox.value = record.id;
+    checkbox.checked = true;
+    checkbox.onchange = updateChatSelectedCount;
+    const text = document.createElement("span");
+    text.textContent = record.source + " · " + (record.updatedAt || record.createdAt || "unknown") + " · " + record.title + " · " + record.messageCount + " messages";
+    row.appendChild(checkbox);
+    row.appendChild(text);
+    box.appendChild(row);
+  }
+  if (skipped && skipped.length) {
+    const note = document.createElement("p");
+    note.className = "chat-import-empty";
+    note.textContent = "Skipped " + skipped.length + " path(s).";
+    box.appendChild(note);
+  }
+  updateChatSelectedCount();
+}
+
+async function scanChats() {
+  setChatImportText("sniffing previous chats...");
+  const res = await fetch("/api/context/chats/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(chatImportPayload()),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const body = await res.json();
+  renderChatScan(body.records || [], body.skipped || []);
+}
+
+async function importChats(all) {
+  const ids = all ? [] : selectedChatIds();
+  if (!all && ids.length === 0) {
+    setChatImportText("Pick at least one chat, or use Import All.");
+    return;
+  }
+  setChatImportText(all ? "importing the whole pile..." : "importing selected chats...");
+  const res = await fetch("/api/context/chats/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...chatImportPayload(),
+      all,
+      ids,
+      summarize: $("chat-summarize").checked,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const body = await res.json();
+  const lines = [
+    "Imported " + (body.records || []).length + " chat(s).",
+    "Created " + (body.artifacts || []).length + " artifact(s).",
+    "Vectorized " + (body.vectorized || 0) + " artifact(s).",
+  ];
+  if (body.warning) lines.push(body.warning);
+  if (body.skipped && body.skipped.length) lines.push("Skipped " + body.skipped.length + " item(s).");
+  setChatImportText(lines.join("\\n"));
+}
+
+async function handleContextCommand(command) {
+  const positionals = commandPositionals(command.args || []);
+  const action = positionals[0];
+  if (action === "scan" && positionals[1] === "chats") {
+    const res = await fetch("/api/context/chats/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(contextChatPayloadFromArgs(command.args || [])),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    const lines = (body.records || []).map((record) => record.id + " · " + record.source + " · " + record.title);
+    showOutput("context scan chats", lines.length ? lines.join("\\n") : "No visible chats found.", "");
+    renderChatScan(body.records || [], body.skipped || []);
+    return;
+  }
+  if (action === "import" && positionals[1] === "chats") {
+    const args = command.args || [];
+    const ids = (commandFlag(args, "ids") || "").split(",").map((part) => part.trim()).filter(Boolean);
+    const all = commandHasFlag(args, "all");
+    if (!all && ids.length === 0) {
+      showOutput("context import chats", "usage: /context import chats --all or --ids <id,...>", "");
+      return;
+    }
+    const res = await fetch("/api/context/chats/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...contextChatPayloadFromArgs(args),
+        all,
+        ids,
+        noVectorize: commandHasFlag(args, "no-vectorize"),
+        summarize: commandHasFlag(args, "summarize"),
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    showOutput(
+      "context import chats",
+      "Imported " + (body.records || []).length + " chat(s), " +
+        (body.artifacts || []).length + " artifact(s), vectorized " +
+        (body.vectorized || 0) + ".",
+      "",
+    );
+    return;
+  }
+  if (action === "vectorize") {
+    const args = command.args || [];
+    const res = await fetch("/api/context/vectorize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        missingOnly: commandHasFlag(args, "missing-only"),
+        limit: commandLimit(args, 100),
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    showOutput("context vectorize", "Scanned " + body.scanned + ", vectorized " + body.vectorized + ".", "");
+    return;
+  }
+  if (action === "ingest") {
+    const path = positionals[1];
+    if (!path) {
+      showOutput("context", "usage: /context ingest <path> [--limit N]", "");
+      return;
+    }
+    showOutput("context ingest", "importing...", path);
+    const res = await fetch("/api/context/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, limit: commandLimit(command.args || [], 80) }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    const lines = (body.artifacts || []).map((artifact) => artifact.id + " · " + artifact.ref);
+    const skipped = body.skipped && body.skipped.length ? "\\nskipped " + body.skipped.length + " file(s)" : "";
+    showOutput("context ingest", (lines.length ? lines.join("\\n") : "No files imported.") + skipped, path);
+    return;
+  }
+  if (action === "search") {
+    const query = positionals.slice(1).join(" ").trim();
+    if (!query) {
+      showOutput("context", "usage: /context search <query> [--limit N]", "");
+      return;
+    }
+    const res = await fetch("/api/context/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, limit: commandLimit(command.args || [], 10) }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    const lines = (body.artifacts || []).map((artifact) => artifact.id + " · " + artifact.ref + "\\n  " + artifact.claim);
+    showOutput("context search", lines.length ? lines.join("\\n") : "No matching context artifacts found.", query);
+    return;
+  }
+  showOutput("context", "usage: /context ingest <path> or /context search <query>", "");
+}
+
+function resetDots() {
+  ["dot-planner", "dot-worker", "dot-scribe"].forEach((id) => {
+    $(id).className = "node-dot";
+  });
+}
+
+function openTownStream(runId, showTank) {
+  if (activeStream) activeStream.close();
+  if (showTank) {
+    $("old-tank-box").hidden = false;
+    $("tank-log").textContent = "(waiting)";
+    $("tank-state").textContent = "running";
+    resetDots();
+  }
+  const es = new EventSource("/api/rite/" + runId + "/stream");
+  activeStream = es;
+  es.addEventListener("plan:planning", () => {
+    if (!showTank) return;
+    $("dot-planner").classList.add("running");
+    appendTank("planner thinking");
+  });
+  es.addEventListener("plan:built", (ev) => {
+    if (!showTank) return;
+    const data = JSON.parse(ev.data);
+    $("dot-planner").className = "node-dot done";
+    appendTank("DAG built: " + data.plan.nodes.length + " node(s)");
+  });
+  es.addEventListener("plan:node:start", (ev) => {
+    if (!showTank) return;
+    const data = JSON.parse(ev.data);
+    $("dot-worker").className = "node-dot running";
+    appendTank("node " + data.nodeId + " start");
+  });
+  es.addEventListener("plan:node:done", (ev) => {
+    if (!showTank) return;
+    const data = JSON.parse(ev.data);
+    $("dot-worker").className = "node-dot done";
+    appendTank("node " + data.nodeId + " done");
+  });
+  es.addEventListener("done", async (ev) => {
+    const data = JSON.parse(ev.data);
+    if (showTank) {
+      $("dot-scribe").className = "node-dot done";
+      $("tank-state").textContent = "done";
+      appendTank("done: " + data.outcome);
+    }
+    es.close();
+    activeStream = null;
+    if (data.finalArtifactId) {
+      const art = await fetch("/api/artifact/" + data.finalArtifactId).then((r) => r.ok ? r.json() : null);
+      const claims = art && Array.isArray(art.claims) ? art.claims.map((c) => "- " + c.text).join("\\n") : "";
+      showOutput("goblintown result", claims || "Run finished. Open /runs for full details.", data.riteId || runId);
+    } else {
+      showOutput("goblintown result", "Run finished. Open /runs for full details.", data.riteId || runId);
+    }
+  });
+  es.addEventListener("error", () => {
+    if (showTank) $("tank-state").textContent = "stream ended";
+  });
+}
+
+$("mode-single").onclick = () => setMode("single");
+$("mode-town").onclick = () => setMode("town");
+$("chat-scan").onclick = () => scanChats().catch((err) => setChatImportText(err.message || String(err)));
+$("chat-import-selected").onclick = () => importChats(false).catch((err) => setChatImportText(err.message || String(err)));
+$("chat-import-all").onclick = () => importChats(true).catch((err) => setChatImportText(err.message || String(err)));
+
+$("goblin-input").addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    $("goblin-form").requestSubmit($("goblin-send"));
+  }
+});
+
+$("goblin-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const command = parseLine($("goblin-input").value);
+  if (!command.task && !["history", "help"].includes(command.kind)) {
+    showOutput("error", "Give the goblin a task.", "");
+    return;
+  }
+  if (command.kind === "help") return showHelp();
+  if (command.kind === "history") return showHistory().catch((err) => showOutput("error", err.message || String(err), ""));
+  if (command.kind === "context") return handleContextCommand(command).catch((err) => showOutput("error", err.message || String(err), ""));
+
+  setMode(command.mode);
+  $("old-tank-enabled").checked = command.mode === "town" && command.tank;
+  showOutput(command.mode === "town" ? "goblintown" : "single goblin", "running...", "");
+
+  try {
+    if (command.mode === "town") {
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task: command.task,
+          maxNodes: 6,
+          maxReplan: 2,
+          remember: true,
+          outputFormat: "markdown",
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      showOutput("goblintown", "run " + body.runId + " started", body.runId);
+      openTownStream(body.runId, command.tank);
+      return;
+    }
+    const res = await fetch("/api/goblin/single", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: command.task, remember: true, outputFormat: "markdown" }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    showOutput("single goblin", body.output, body.lootId ? "loot " + body.lootId : "");
+  } catch (err) {
+    showOutput("error", err.message || String(err), "");
+  }
+});
+</script>
+</body>
+</html>`;
 }
 
 function tankHtml(
@@ -2813,7 +4068,7 @@ function tankHtml(
     --pass: #b6f37a;
     --fail: #f3a07a;
     --warn: #f3df7a;
-    --bubble-bg: #14201a;
+    --bubble-bg: rgba(20, 32, 26, 0.78);
     --bubble-border: #2e4220;
     --sky: #131c14;
   }
@@ -3369,6 +4624,51 @@ function tankHtml(
     .provider-route-extra { grid-column: auto; }
     .provider-route-row > div:nth-child(4) { grid-column: auto; }
     .provider-route-slot { padding-bottom: 0; }
+    body { padding: 0; }
+    .warren {
+      width: 100vw;
+      height: 100vh;
+      border-radius: 0;
+      border-left: 0;
+      border-right: 0;
+    }
+    .strip {
+      gap: 0.55rem;
+      padding: 0.48rem 0.55rem;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .strip .stat,
+    .strip .tier {
+      display: none;
+    }
+    .workarea {
+      grid-template-columns: 96px 1fr;
+    }
+    .ops-sidebar {
+      padding: 0.45rem 0.28rem;
+    }
+    .ops-quick .btn {
+      min-height: 2rem;
+      font-size: 0.5rem;
+      padding: 0.32rem 0.14rem;
+    }
+    .ops-examples,
+    .ops-output {
+      display: none;
+    }
+    .chat-thread {
+      padding: 0.85rem;
+    }
+    .chat-input-row {
+      grid-template-columns: 1fr;
+    }
+    .chat-input-row button {
+      width: 100%;
+    }
+    .chat-offer-inline.open {
+      display: grid;
+    }
   }
   .country-chip {
     border: 1px solid var(--line);
@@ -3716,19 +5016,19 @@ function tankHtml(
 
   .workarea {
     display: grid;
-    grid-template-columns: 290px 1fr;
+    grid-template-columns: 188px 1fr;
     min-height: 0;
     border-bottom: 1px solid var(--line);
   }
-  .workarea.sidebar-collapsed { grid-template-columns: 44px 1fr; }
+  .workarea.sidebar-collapsed { grid-template-columns: 52px 1fr; }
   .ops-sidebar {
     border-right: 1px solid var(--line);
     background: rgba(8, 12, 8, 0.95);
-    padding: 0.7rem;
+    padding: 0.55rem 0.42rem;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    gap: 0.6rem;
+    gap: 0.45rem;
     overflow: auto;
   }
   .ops-head {
@@ -3739,7 +5039,7 @@ function tankHtml(
   }
   .ops-sidebar h3 {
     margin: 0;
-    font-size: 0.74rem;
+    font-size: 0.62rem;
     color: var(--fg-bright);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -3758,19 +5058,39 @@ function tankHtml(
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: 0.45rem;
   }
   .ops-quick {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     gap: 0.3rem;
   }
   .ops-quick .btn {
-    padding: 0.45rem 0.4rem;
-    font-size: 0.66rem;
+    padding: 0.44rem 0.22rem;
+    font-size: 0.58rem;
     letter-spacing: 0.07em;
+    min-height: 2.2rem;
+  }
+  .ops-nav-group {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: rgba(5,8,5,0.48);
+    overflow: hidden;
+  }
+  .ops-nav-group summary {
+    cursor: pointer;
+    color: var(--fg-bright);
+    padding: 0.55rem 0.58rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .ops-nav-group .btn {
+    width: calc(100% - 0.6rem);
+    margin: 0 0.3rem 0.3rem;
   }
   .ops-subtle {
+    display: none;
     color: var(--muted);
     font-size: 0.7rem;
     line-height: 1.35;
@@ -3781,11 +5101,7 @@ function tankHtml(
     padding: 0.52rem 0.65rem;
     font-size: 0.68rem;
   }
-  .ops-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 0.4rem;
-  }
+  .ops-row { display: none; }
   .ops-input, .ops-select {
     width: 100%;
     background: var(--bg);
@@ -3819,22 +5135,23 @@ function tankHtml(
   .ops-examples summary {
     cursor: pointer;
     color: var(--accent);
-    font-size: 0.72rem;
+    font-size: 0.58rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     margin-bottom: 0.5rem;
+    text-align: center;
   }
   .ops-examples[open] summary { margin-bottom: 0.55rem; }
   .ops-output {
-    min-height: 0;
-    flex: 1;
+    min-height: 4.2rem;
+    flex: 0 0 auto;
     border: 1px solid var(--line);
     background: rgba(5,8,5,0.85);
     padding: 0.5rem;
     overflow: auto;
     white-space: pre-wrap;
     word-break: break-word;
-    font-size: 0.72rem;
+    font-size: 0.58rem;
     line-height: 1.35;
     color: var(--fg);
   }
@@ -3858,6 +5175,160 @@ function tankHtml(
   .tank {
     position: relative; overflow: hidden;
     background: linear-gradient(180deg, var(--sky) 0%, #0c1310 65%, #0a0e08 100%);
+  }
+  .tank.chat-mode {
+    background: var(--bg-deep);
+    overflow: hidden;
+  }
+  .tank:not(.chat-mode) .chat-main { display: none; }
+  .tank.chat-mode .tank-logo-mark,
+  .tank.chat-mode .star,
+  .tank.chat-mode .mountains,
+  .tank.chat-mode .skyline,
+  .tank.chat-mode .smoke,
+  .tank.chat-mode .banner,
+  .tank.chat-mode .trees,
+  .tank.chat-mode .lantern,
+  .tank.chat-mode .ground,
+  .tank.chat-mode .ground-shadow,
+  .tank.chat-mode .pigeon-wire,
+  .tank.chat-mode .gremlin-perch,
+  .tank.chat-mode .ogre-cave,
+  .tank.chat-mode .ogre-cave-label,
+  .tank.chat-mode .workshop,
+  .tank.chat-mode .troll-bridge,
+  .tank.chat-mode .raccoon-dump,
+  .tank.chat-mode .hoard,
+  .tank.chat-mode .creature,
+  .tank.chat-mode .pos-goblins,
+  .tank.chat-mode .goblin-pile,
+  .tank.chat-mode .bubble-layer,
+  .tank.chat-mode .dag-panel,
+  .tank.chat-mode .result-panel {
+    display: none !important;
+  }
+  .chat-main {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-deep);
+  }
+  .chat-thread {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: clamp(1rem, 3vw, 2.2rem);
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+  .chat-message {
+    width: min(840px, 100%);
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.82rem 0.95rem;
+    background: rgba(20,32,26,0.52);
+  }
+  .chat-message.user {
+    align-self: flex-end;
+    border-color: rgba(143,207,82,0.42);
+    background: rgba(31,58,20,0.32);
+  }
+  .chat-message.assistant,
+  .chat-message.system {
+    align-self: flex-start;
+  }
+  .chat-role {
+    display: block;
+    margin-bottom: 0.32rem;
+    color: var(--muted);
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .chat-composer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line);
+    padding: 0.8rem clamp(0.8rem, 2vw, 1.4rem);
+    background: rgba(8,12,8,0.98);
+  }
+  .chat-composer-inner {
+    width: min(920px, 100%);
+    margin: 0 auto;
+    display: grid;
+    gap: 0.55rem;
+  }
+  .chat-offer-inline {
+    display: none;
+    border: 1px solid rgba(143,207,82,0.28);
+    border-radius: 8px;
+    background: rgba(16,26,18,0.92);
+    padding: 0.62rem 0.7rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    color: var(--fg);
+  }
+  .chat-offer-inline.open { display: flex; }
+  .chat-input-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 0.55rem;
+    align-items: end;
+  }
+  .chat-input-row textarea {
+    min-height: 4.4rem;
+    max-height: 12rem;
+    resize: vertical;
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg-bright);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.75rem 0.85rem;
+    font: inherit;
+  }
+  .chat-input-row textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .chat-input-row button,
+  .chat-offer-inline button {
+    min-height: 2.6rem;
+    border: 1px solid var(--accent);
+    background: #1f3a14;
+    color: var(--fg-bright);
+    border-radius: 8px;
+    padding: 0.52rem 0.85rem;
+    font: inherit;
+    cursor: pointer;
+  }
+  .chat-input-row button:disabled,
+  .chat-offer-inline button:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
+  .chat-meta-row {
+    display: flex;
+    gap: 0.65rem;
+    align-items: center;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: 0.68rem;
+  }
+  .chat-meta-row select,
+  .chat-meta-row input {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 0.28rem 0.38rem;
+    font: inherit;
+    font-size: 0.68rem;
   }
   .tank-logo-mark {
     position: absolute; top: 50%; left: 50%; z-index: 0;
@@ -4131,18 +5602,39 @@ function tankHtml(
   .creature.pos-pigeon[data-state="idle"] { animation: none; }
   .pos-gremlin { top: 9%;  right: 12%; }
   .pos-ogre    { top: 35%; left: 7%; }
-  .pos-goblins { bottom: 17%; left: 50%; transform: translateX(-50%); }
+  .pos-goblins { position: absolute; top: 28%; left: 50%; transform: translateX(-50%); width: min(92%, 760px); z-index: 4; }
   .pos-raccoon { bottom: 8%; left: 12%; }
   .pos-troll   { bottom: 11%; right: 11%; }
 
-  .goblin-pile { display: flex; gap: 1.2rem; align-items: flex-end; }
-  .goblin-pile .creature { position: static; font-size: 2.2rem; }
-  .goblin-pile .badge {
-    align-self: center; margin-left: 0.4rem;
-    padding: 2px 7px; border: 1px solid var(--line); background: var(--bg-deep);
-    color: var(--accent); font-size: 0.7rem; border-radius: 3px; letter-spacing: 0.06em;
+  .goblin-pile {
+    position: relative; z-index: 2;
+    display: flex; flex-wrap: wrap-reverse; gap: 0.45rem 0.7rem;
+    align-items: flex-end; justify-content: center;
   }
-  .goblin-wrap { display: flex; flex-direction: column; align-items: center; }
+  .goblin-pile .creature { position: static; font-size: 2.2rem; }
+  .goblin-wrap {
+    width: 72px; min-height: 92px;
+    display: flex; flex-direction: column; align-items: center;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .goblin-wrap[data-home="true"] { opacity: 0; transform: translateY(10px) scale(0.72); pointer-events: none; }
+  .goblin-wrap[data-home="false"] { opacity: 1; transform: translateY(0) scale(1); }
+  .goblin-wrap[data-specialist="true"] .goblin-sprite { filter: invert(1) hue-rotate(160deg) saturate(1.45) contrast(1.08); }
+  .goblin-wrap[data-specialist="true"] .personality { color: #9ef8ff; text-shadow: 0 0 8px rgba(158,248,255,0.42); }
+  .goblin-sprite {
+    width: 76px; height: 76px; display: block;
+    image-rendering: pixelated;
+  }
+  .goblin-explosion {
+    position: absolute; left: 50%; top: 42%; z-index: 5;
+    width: min(58vw, 360px); height: auto;
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.12s ease, transform 0.18s ease;
+  }
+  .goblin-explosion.active { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
+  .creature.goblin-sprite-animated .emoji { display: none; }
+  .creature.goblin-sprite-animated .goblin-sprite { display: block; }
   .personality {
     margin-top: 0.15rem; font-size: 0.58rem; color: var(--muted);
     letter-spacing: 0.1em; text-transform: uppercase;
@@ -4155,6 +5647,7 @@ function tankHtml(
     border: 1px solid var(--bubble-border); border-radius: 6px;
     color: var(--fg-bright); font-size: 0.74rem; line-height: 1.35;
     box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+    backdrop-filter: blur(2px);
     opacity: 0; transform: translateY(6px);
     animation: bubble-in 0.25s ease-out forwards, bubble-out 0.4s ease-in forwards;
     animation-delay: 0s, 4s;
@@ -4167,7 +5660,9 @@ function tankHtml(
   .bubble::after { content: ""; position: absolute; width: 0; height: 0; border: 6px solid transparent; }
   .bubble[data-tail="bl"]::after { bottom: -12px; left: 14px; border-top-color: var(--bubble-border); }
   .bubble[data-tail="br"]::after { bottom: -12px; right: 14px; border-top-color: var(--bubble-border); }
+  .bubble[data-tail="bc"]::after { bottom: -12px; left: 50%; transform: translateX(-50%); border-top-color: var(--bubble-border); }
   .bubble[data-tail="tl"]::after { top: -12px; left: 14px; border-bottom-color: var(--bubble-border); }
+  .bubble[data-tail="tc"]::after { top: -12px; left: 50%; transform: translateX(-50%); border-bottom-color: var(--bubble-border); }
   @keyframes bubble-in  { to { opacity: 1; transform: translateY(0); } }
   @keyframes bubble-out { to { opacity: 0; transform: translateY(-4px); } }
 
@@ -4237,13 +5732,14 @@ function tankHtml(
     position: absolute;
     max-width: 32ch;
     padding: 0.5rem 0.7rem;
-    background: rgba(20,32,26,0.96);
+    background: rgba(20, 32, 26, 0.78);
     border: 1px dashed var(--accent);
     border-radius: 6px;
     color: var(--fg-bright);
     font-size: 0.72rem;
     line-height: 1.4;
     box-shadow: 0 4px 18px rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
     pointer-events: none;
     z-index: 7;
     white-space: pre-wrap;
@@ -4890,16 +6386,26 @@ function tankHtml(
   <div class="workarea" id="workarea">
   <aside class="ops-sidebar" id="ops-sidebar">
     <div class="ops-head">
-      <h3>Command Sidebar</h3>
-      <button class="ops-toggle" id="ops-toggle" type="button" aria-expanded="true">◀</button>
+      <h3>Goblintown</h3>
+      <button class="ops-toggle" id="ops-toggle" type="button" aria-expanded="true" title="Collapse sidebar">◀</button>
     </div>
     <div class="ops-main" id="ops-main">
       <div class="ops-quick">
-        <button class="btn primary" id="btn-rite" type="button">NEW RITE</button>
-        <button class="btn" id="btn-thesis" type="button">THESIS</button>
-        <button class="btn" id="btn-sentiment" type="button">SENTIMENT</button>
-        <button class="btn" id="btn-plan" type="button">PLAN</button>
-        <a class="btn" href="/runs">RUNS</a>
+        <button class="btn primary" id="btn-chat" type="button" title="Start a fresh single-goblin chat">New Chat</button>
+        <button class="btn primary" id="btn-rite" type="button" title="Start a new full Tank rite">New Rite</button>
+        <button class="btn" id="btn-api-configs" type="button" title="Open API provider and model settings">API Configs</button>
+        <details class="ops-nav-group" id="ops-rites">
+          <summary title="Open rite shortcuts and run history">Rites</summary>
+          <button class="btn" id="btn-thesis" type="button" title="Build a thesis rite">Thesis</button>
+          <button class="btn" id="btn-sentiment" type="button" title="Run sentiment tools">Sentiment</button>
+          <button class="btn" id="btn-plan" type="button" title="Create a planned rite">Plan</button>
+          <a class="btn" href="/runs" title="Open previous runs">Runs</a>
+        </details>
+        <details class="ops-nav-group" id="ops-chats">
+          <summary title="Open chat shortcuts">Chats</summary>
+          <a class="btn" href="/chat" title="Open the standalone chat page">Single Chat</a>
+        </details>
+        <button class="btn" id="btn-sidebar-settings" type="button" title="Open Settings">Settings</button>
       </div>
       <div class="ops-subtle">Run any Goblintown CLI command in-app. Use full syntax in the input line.</div>
       <div class="ops-row">
@@ -4924,7 +6430,51 @@ function tankHtml(
     </div>
   </aside>
 
-  <div class="tank" id="tank">
+  <div class="tank chat-mode" id="tank">
+    <section class="chat-main" id="chat-main" aria-label="Single Goblin chat">
+      <div class="chat-thread" id="chat-thread" aria-live="polite">
+        <div class="chat-message assistant">
+          <span class="chat-role">single goblin</span>
+          Ask anything. This surface uses one regular model call. When a prompt needs the full town, I will offer Goblintown without starting it automatically.
+        </div>
+      </div>
+      <form class="chat-composer" id="root-chat-form">
+        <div class="chat-composer-inner">
+          <div class="chat-offer-inline" id="root-chat-offer">
+            <span id="root-chat-offer-text">This looks complex enough for the full Goblintown pack.</span>
+            <button id="root-chat-offer-run" type="button">Run Goblintown</button>
+          </div>
+          <div class="chat-input-row">
+            <button id="root-chat-voice" type="button" title="Voice">Voice</button>
+            <textarea id="root-chat-input" rows="3" placeholder="Message the single Goblin..." required></textarea>
+            <button id="root-chat-send" type="submit" title="Send (Cmd/Ctrl+Enter)">Send</button>
+          </div>
+          <div class="chat-meta-row">
+            <label>Model
+              <select id="root-chat-model" title="Choose the chat model slot">
+                <option value="inherit">provider default</option>
+                <option value="goblin">goblin slot</option>
+                <option value="ogre">ogre slot</option>
+              </select>
+            </label>
+            <label>Personality
+              <select id="root-chat-personality" title="Choose the single-goblin personality">
+                <option value="chipper">chipper</option>
+                <option value="nerdy">nerdy</option>
+                <option value="stoic">stoic</option>
+                <option value="cynical">cynical</option>
+                <option value="feral">feral</option>
+                <option value="goblin_mode">goblin_mode</option>
+              </select>
+            </label>
+            <label>Max tokens
+              <input id="root-chat-max" type="number" min="64" max="4000" value="900" title="Maximum response tokens">
+            </label>
+            <span id="root-chat-status">ready</span>
+          </div>
+        </div>
+      </form>
+    </section>
     <img class="tank-logo-mark" src="/assets/gtowntextmark.png" alt="" aria-hidden="true" decoding="async">
 
     <span class="star" style="top: 5%; left: 18%;">✦</span>
@@ -5046,6 +6596,7 @@ function tankHtml(
     </div>
     <div class="pos-goblins" id="c-goblins">
       <div class="goblin-pile" id="goblin-pile"></div>
+      <canvas class="goblin-explosion" id="goblin-explosion" width="220" height="175" aria-hidden="true"></canvas>
     </div>
     <div class="creature pos-raccoon" id="c-raccoon" data-state="idle"
          style="--sway-dur: 4.4s; --sway-x: 3px; --sway-delay: -1.3s;">
@@ -5102,6 +6653,7 @@ function tankHtml(
               <option value="chipper">chipper</option>
               <option value="stoic">stoic</option>
               <option value="feral">feral</option>
+              <option value="goblin_mode">goblin_mode</option>
             </select>
           </div>
         </div>
@@ -5198,7 +6750,11 @@ const $ = (id) => document.getElementById(id);
 const tank = $("tank");
 const ticker = $("ticker");
 const tickerText = $("ticker-text");
+const rootChatMessages = [];
+let rootChatOfferedTask = "";
 const goblinPile = $("goblin-pile");
+const goblinExplosion = $("goblin-explosion");
+const goblinExplosionCtx = goblinExplosion ? goblinExplosion.getContext("2d") : null;
 const bubbleLayer = $("bubble-layer");
 const warren = $("warren");
 const workarea = $("workarea");
@@ -5363,6 +6919,48 @@ const IDLE_CREATURE_SPRITES = [
   },
 ];
 
+const GOBLIN_VARIANT_WEIGHTS = [
+  { variant: "green", weight: 0.46 },
+  { variant: "fire", weight: 0.27 },
+  { variant: "spear", weight: 0.17 },
+  { variant: "sceptre", weight: 0.10 },
+];
+
+const GOBLIN_ACTION_SHEETS = {
+  green: {
+    argue: { src: "/assets/goblin-green-argue.png", frames: 12, fps: 9 },
+    defend: { src: "/assets/goblin-green-defend.png", frames: 12, fps: 10 },
+    "go-home": { src: "/assets/goblin-green-go-home.png", frames: 12, fps: 10 },
+    "come-out": { src: "/assets/goblin-green-come-out.png", frames: 12, fps: 10 },
+  },
+  fire: {
+    argue: { src: "/assets/goblin-fire-argue.png", frames: 12, fps: 9 },
+    defend: { src: "/assets/goblin-fire-defend.png", frames: 12, fps: 10 },
+    "go-home": { src: "/assets/goblin-fire-go-home.png", frames: 14, fps: 10 },
+    "come-out": { src: "/assets/goblin-fire-come-out.png", frames: 12, fps: 10 },
+  },
+  spear: {
+    argue: { src: "/assets/goblin-spear-argue.png", frames: 12, fps: 9 },
+    defend: { src: "/assets/goblin-spear-defend.png", frames: 12, fps: 10 },
+    "go-home": { src: "/assets/goblin-spear-go-home.png", frames: 12, fps: 10 },
+    "come-out": { src: "/assets/goblin-spear-come-out.png", frames: 13, fps: 10 },
+  },
+  sceptre: {
+    argue: { src: "/assets/goblin-sceptre-argue.png", frames: 12, fps: 9 },
+    defend: { src: "/assets/goblin-sceptre-defend.png", frames: 22, fps: 12 },
+    "go-home": { src: "/assets/goblin-sceptre-go-home.png", frames: 12, fps: 10 },
+    "come-out": { src: "/assets/goblin-sceptre-come-out.png", frames: 12, fps: 10 },
+  },
+};
+
+const GOBLIN_EXPLOSION_SHEET = {
+  src: "/assets/goblin-explosion.png",
+  cols: 4,
+  rows: 3,
+  totalFrames: 10,
+  fps: 14,
+};
+
 /* Pigeon sprite renderer */
 const PIGEON_SPRITE_CONFIG = {
   rightSrc: "/assets/pigeon-walk-right.png",
@@ -5376,10 +6974,10 @@ const PIGEON_PECK_CONFIG = {
   cols: 5,
   rows: 5,
   totalFrames: 25,
-  firstMinIntervalMs: 6_000,
-  firstMaxIntervalMs: 14_000,
-  minIntervalMs: 40_000,
-  maxIntervalMs: 120_000,
+  firstMinIntervalMs: 1_500,
+  firstMaxIntervalMs: 4_000,
+  minIntervalMs: 14_000,
+  maxIntervalMs: 35_000,
   fps: 8,
 };
 const PIGEON_WIRE_NUDGE_UP_PX = 12;
@@ -5443,6 +7041,7 @@ const raccoonSpriteState = {
   rafId: 0,
   images: { sleep: null, getUp: null, scurry: null },
 };
+let raccoonScurryTimer = 0;
 
 function setRaccoonFacing(facing) {
   raccoonSpriteState.facing = facing === "left" ? "left" : "right";
@@ -5604,12 +7203,53 @@ function playRaccoonScurry(facing) {
   return true;
 }
 
+function clearRaccoonScurryTimer() {
+  if (raccoonScurryTimer) {
+    clearTimeout(raccoonScurryTimer);
+    raccoonScurryTimer = 0;
+  }
+}
+
+function raccoonScurryDelayMs() {
+  if (!raccoonSpriteState.enabled) return 0;
+  if (
+    raccoonSpriteState.mode === "sleep" ||
+    raccoonSpriteState.mode === "sleep-down" ||
+    raccoonSpriteState.mode === "wake"
+  ) {
+    return Math.ceil((RACCOON_SPRITE_CONFIG.getUpFrames / RACCOON_SPRITE_CONFIG.getUpFps) * 1000) + 80;
+  }
+  return 80;
+}
+
+function cueRaccoonScurryAfterWake() {
+  if (
+    raccoonSpriteState.enabled &&
+    (raccoonSpriteState.mode === "sleep" || raccoonSpriteState.mode === "sleep-down")
+  ) {
+    setState("c-raccoon","active");
+  }
+  clearRaccoonScurryTimer();
+  const delay = raccoonScurryDelayMs();
+  raccoonScurryTimer = setTimeout(() => {
+    raccoonScurryTimer = 0;
+    scurryVariant();
+  }, delay);
+}
+
+function cueRaccoonWork(options) {
+  options = options || {};
+  setState("c-raccoon","active");
+  if (options.scurry) cueRaccoonScurryAfterWake();
+}
+
 function applyRaccoonStateVisual(state) {
   const wantsIdle = state === "idle";
   raccoonSpriteState.requestedState = wantsIdle ? "idle" : "active";
   if (!raccoonSpriteState.enabled) return;
 
   if (wantsIdle) {
+    clearRaccoonScurryTimer();
     if (raccoonSpriteState.mode === "sleep" || raccoonSpriteState.mode === "sleep-down") return;
     playRaccoonTransition("down");
     return;
@@ -5822,13 +7462,20 @@ function scheduleNextPigeonPeck(ts, opts) {
   pigeonSpriteState.nextPeckAtMs = now + nextPigeonPeckDelayMs(initial);
 }
 
+function queuePigeonPeckSoon(delayMs) {
+  if (!pigeonSpriteState.enabled || !pigeonSpriteState.images.peck) return;
+  if (!pigeonSpriteState.peckFrameOrder.length) return;
+  const delay = Math.max(0, Number(delayMs) || 0);
+  pigeonSpriteState.nextPeckAtMs = performance.now() + delay;
+}
+
 function startPigeonPeck(ts) {
   if (!pigeonSpriteState.images.peck) return false;
   if (!pigeonSpriteState.peckFrameOrder.length) return false;
   if (pigeonSpriteState.mode === "peck") return true;
   pigeonSpriteState.mode = "peck";
   pigeonSpriteState.frameCursor = 0;
-  pigeonSpriteState.peckLoopsLeft = 1;
+  pigeonSpriteState.peckLoopsLeft = 2;
   pigeonSpriteState.peckStepBudget = Math.max(
     1,
     pigeonSpriteState.peckFrameOrder.length * pigeonSpriteState.peckLoopsLeft
@@ -6254,7 +7901,19 @@ window.addEventListener("resize", () => {
   ["sentiment-clear-secret", "Delete the selected locally stored sentiment key."],
   ["provider-chip", "Configure local provider, model slots, and API key storage."],
   ["reset-chip", "Open reset controls."],
-  ["btn-rite", "Start a new rite run immediately."],
+  ["btn-chat", "Start a fresh single-goblin chat."],
+  ["btn-api-configs", "Open API provider and model settings."],
+  ["btn-sidebar-settings", "Open the settings menu."],
+  ["ops-rites", "Open rite shortcuts and run history."],
+  ["ops-chats", "Open chat shortcuts."],
+  ["root-chat-input", "Write a chat message. Shift+Enter inserts a line break; Cmd/Ctrl+Enter sends."],
+  ["root-chat-send", "Send this chat message."],
+  ["root-chat-voice", "Start voice chat when voice is configured."],
+  ["root-chat-model", "Choose which model slot this chat should use."],
+  ["root-chat-personality", "Choose the personality for single-goblin replies."],
+  ["root-chat-max", "Limit the maximum length of the reply."],
+  ["root-chat-offer-run", "Launch this prompt in the full Tank."],
+  ["btn-rite", "Start a new full Tank rite."],
   ["btn-thesis", "Build a quality thesis about a project, team, product, or protocol."],
   ["btn-plan", "Create a planned multi-step rite."],
   ["btn-asteroid", "Open the destructive full reset flow."],
@@ -9431,40 +11090,168 @@ setTimeout(maybeStartOnboarding, 120);
 }
 
 /* Bubbles */
-const MAX_BUBBLES = 3;
+const MAX_BUBBLES = 6;
+const BUBBLE_GAP = 8;
 const activeBubbles = [];
+
+function rectsOverlap(a, b, gap) {
+  const g = gap || 0;
+  return !(
+    a.right + g <= b.left ||
+    a.left >= b.right + g ||
+    a.bottom + g <= b.top ||
+    a.top >= b.bottom + g
+  );
+}
+
+function bubbleOverlapArea(a, b) {
+  const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  return x * y;
+}
+
+function clampBubbleRect(left, top, width, height, tankRect) {
+  const x = Math.max(8, Math.min(tankRect.width - width - 8, left));
+  const y = Math.max(8, Math.min(tankRect.height - height - 8, top));
+  return { left: x, top: y, right: x + width, bottom: y + height, width, height };
+}
+
+function getBubbleLayoutItems() {
+  const seen = new Set();
+  const items = [];
+  const add = (el) => {
+    if (!el || !el.isConnected || seen.has(el)) return;
+    const target = el.__bubbleTarget;
+    if (!target || !target.isConnected) return;
+    seen.add(el);
+    items.push({
+      el,
+      target,
+      preferredWidth: el.__preferredWidth || 220,
+    });
+  };
+  activeBubbles.forEach(add);
+  Object.values(thinkingBubbles).forEach(add);
+  return items;
+}
+
+function bubbleCandidatesForTarget(cx, targetTop, targetBottom, bw, bh, tankRect) {
+  const above = targetTop - bh - 14;
+  const below = targetBottom + 14;
+  const candidates = [
+    { left: cx - bw / 2, top: above, tail: "bc" },
+    { left: cx - bw - 18, top: above - 6, tail: "br" },
+    { left: cx + 18, top: above - 6, tail: "bl" },
+    { left: cx - bw / 2, top: above - bh - BUBBLE_GAP, tail: "bc" },
+    { left: cx - bw - 18, top: above - bh - BUBBLE_GAP, tail: "br" },
+    { left: cx + 18, top: above - bh - BUBBLE_GAP, tail: "bl" },
+    { left: cx - bw / 2, top: below, tail: "tc" },
+    { left: cx - bw - 18, top: below + 6, tail: "tc" },
+    { left: cx + 18, top: below + 6, tail: "tl" },
+  ];
+  const lanes = [
+    cx - bw / 2,
+    cx - bw - 18,
+    cx + 18,
+    tankRect.width / 2 - bw / 2,
+    8,
+    tankRect.width - bw - 8,
+  ];
+  const step = Math.max(42, Math.min(72, bh + BUBBLE_GAP));
+  for (const left of lanes) {
+    for (let top = Math.max(8, above); top >= 8; top -= step) {
+      candidates.push({ left, top, tail: "bc" });
+    }
+    for (let top = Math.max(8, below); top <= tankRect.height - bh - 8; top += step) {
+      candidates.push({ left, top, tail: "tc" });
+    }
+  }
+  return candidates;
+}
+
+function placeBubbleAvoidingOverlap(item, placed, tankRect) {
+  const b = item.el;
+  const creatureEl = item.target;
+  const cRect = creatureEl.getBoundingClientRect();
+  const cx = cRect.left - tankRect.left + cRect.width / 2;
+  const targetTop = cRect.top - tankRect.top;
+  const targetBottom = cRect.bottom - tankRect.top;
+  const bw = Math.min(item.preferredWidth || b.offsetWidth || 220, tankRect.width - 16);
+  b.style.width = bw + "px";
+  const bh = b.offsetHeight || 56;
+  const candidates = bubbleCandidatesForTarget(cx, targetTop, targetBottom, bw, bh, tankRect)
+    .map((candidate) => ({
+      rect: clampBubbleRect(candidate.left, candidate.top, bw, bh, tankRect),
+      tail: candidate.tail,
+    }));
+
+  let best = candidates[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const collides = placed.some((rect) => rectsOverlap(candidate.rect, rect, BUBBLE_GAP));
+    if (!collides) {
+      best = candidate;
+      break;
+    }
+    const overlap = placed.reduce((sum, rect) => sum + bubbleOverlapArea(candidate.rect, rect), 0);
+    const distance = Math.abs(candidate.rect.left + bw / 2 - cx) + Math.abs(candidate.rect.bottom - targetTop);
+    const score = overlap * 1000 + distance;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  b.style.left = best.rect.left + "px";
+  b.style.top = best.rect.top + "px";
+  b.dataset.tail = best.tail;
+  placed.push(best.rect);
+}
+
+function layoutBubbleLayer() {
+  const tankRect = tank.getBoundingClientRect();
+  if (!tankRect.width || !tankRect.height) return;
+  const placed = [];
+  for (const item of getBubbleLayoutItems()) {
+    placeBubbleAvoidingOverlap(item, placed, tankRect);
+  }
+}
+
+function positionBubbleAboveTarget(b, creatureEl, preferredWidth) {
+  b.__bubbleTarget = creatureEl;
+  b.__preferredWidth = preferredWidth || 220;
+  layoutBubbleLayer();
+}
 function dispatchBubble(creatureEl, text, kind, lifetime) {
   if (!creatureEl) return;
   kind = kind || "say";
   lifetime = lifetime || 4400;
-  const tankRect = tank.getBoundingClientRect();
-  const cRect = creatureEl.getBoundingClientRect();
-  const cx = cRect.left - tankRect.left + cRect.width / 2;
-  const cy = cRect.top  - tankRect.top;
-  const onLeft = cx < tankRect.width / 2;
 
   const b = document.createElement("div");
   b.className = "bubble kind-" + kind;
   b.textContent = text;
   bubbleLayer.appendChild(b);
-
-  const bw = 200;
-  let left = onLeft ? cx + 14 : cx - bw + 14;
-  left = Math.max(8, Math.min(tankRect.width - bw - 8, left));
-  let top = cy - 56;
-  if (top < 8) top = cy + cRect.height + 12;
-  b.style.left = left + "px";
-  b.style.top = top + "px";
-  b.dataset.tail = (top < cy) ? (onLeft ? "bl" : "br") : "tl";
+  positionBubbleAboveTarget(b, creatureEl, 200);
 
   activeBubbles.push(b);
   if (activeBubbles.length > MAX_BUBBLES) {
     const old = activeBubbles.shift();
     old.style.animation = "bubble-out 0.3s ease-in forwards";
-    setTimeout(() => old.remove(), 350);
+    setTimeout(() => {
+      old.remove();
+      layoutBubbleLayer();
+    }, 350);
   }
-  setTimeout(() => { b.remove(); const i = activeBubbles.indexOf(b); if (i >= 0) activeBubbles.splice(i, 1); }, lifetime + 400);
+  layoutBubbleLayer();
+  setTimeout(() => {
+    b.remove();
+    const i = activeBubbles.indexOf(b);
+    if (i >= 0) activeBubbles.splice(i, 1);
+    layoutBubbleLayer();
+  }, lifetime + 400);
 }
+
+window.addEventListener("resize", layoutBubbleLayer);
 
 /* Animations w/ variance */
 function setState(id, state) {
@@ -9515,11 +11302,439 @@ function setTicker(text, live) {
   ticker.classList.toggle("live", !!live);
 }
 
+function showChatMode() {
+  tank.classList.add("chat-mode");
+  $("clock").textContent = "chat";
+  setLaunchButtonsDisabled(false);
+}
+
+function showTankMode() {
+  tank.classList.remove("chat-mode");
+}
+
+function appendRootChatMessage(role, content, opts) {
+  const thread = $("chat-thread");
+  const node = document.createElement("div");
+  node.className = "chat-message " + role;
+  const label = document.createElement("span");
+  label.className = "chat-role";
+  label.textContent = role === "user" ? "you" : role === "system" ? "goblintown" : "single goblin";
+  node.appendChild(label);
+  node.appendChild(document.createTextNode(content));
+  if (opts && opts.href) {
+    const link = document.createElement("a");
+    link.href = opts.href;
+    link.textContent = " Open";
+    link.style.marginLeft = "0.35rem";
+    node.appendChild(link);
+  }
+  thread.appendChild(node);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function setRootChatOffer(nextOffer) {
+  const offer = $("root-chat-offer");
+  const text = $("root-chat-offer-text");
+  rootChatOfferedTask = nextOffer && nextOffer.task ? nextOffer.task : "";
+  if (!rootChatOfferedTask) {
+    offer.classList.remove("open");
+    return;
+  }
+  text.textContent = nextOffer.requested
+    ? "Goblintown requested. Start the full pack for this prompt?"
+    : "This looks complex enough for the full Goblintown pack.";
+  offer.classList.add("open");
+}
+
+function startNewRiteChatFlow() {
+  showChatMode();
+  setRootChatOffer(null);
+  appendRootChatMessage(
+    "system",
+    "What type of rite should we run?\\nregular · thesis · crypto/onchain · sentiment · plan",
+  );
+  $("root-chat-status").textContent = "choose rite type";
+  setTimeout(() => $("root-chat-input").focus(), 30);
+}
+
+async function startGoblintownFromChat(task) {
+  const cleanTask = (task || "").trim();
+  if (!cleanTask) return;
+  const runButton = $("root-chat-offer-run");
+  runButton.disabled = true;
+  $("root-chat-status").textContent = "starting Goblintown";
+  showTankMode();
+  hideResumePanel();
+  lastTask = cleanTask;
+  setLaunchButtonsDisabled(true);
+  $("clock").textContent = "rite running";
+  resetRunStage(false, 3);
+  setTicker("POSTing rite ...", true);
+  try {
+    const startRes = await fetch("/api/rite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task: cleanTask,
+        packSize: 3,
+        personality: $("root-chat-personality").value,
+        remember: true,
+      }),
+    });
+    const body = await startRes.json().catch(() => ({}));
+    if (!startRes.ok) throw new Error(body.error || startRes.statusText);
+    setRootChatOffer(null);
+    setTicker("rite " + body.runId + " started", true);
+    rememberActiveRun(body.runId, false);
+    history.replaceState(null, "", "/?run=" + encodeURIComponent(body.runId));
+    openStream(body.runId, false);
+  } catch (err) {
+    $("root-chat-status").textContent = err.message || String(err);
+    showChatMode();
+  } finally {
+    runButton.disabled = false;
+  }
+}
+
+$("btn-chat").onclick = () => {
+  history.replaceState(null, "", "/");
+  showChatMode();
+  setTicker("single goblin chat");
+  setTimeout(() => $("root-chat-input").focus(), 30);
+};
+
+$("btn-api-configs").onclick = () => {
+  closeTopPopovers("provider-popover");
+  providerPopover.classList.add("open");
+};
+
+$("btn-sidebar-settings").onclick = () => setSettingsOpen(true);
+
+$("root-chat-voice").onclick = () => {
+  $("root-chat-status").textContent = "voice coming soon";
+};
+
+$("root-chat-input").addEventListener("keydown", (event) => {
+  if (event.shiftKey && event.key === "Enter") return;
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    $("root-chat-form").requestSubmit();
+  }
+});
+
+$("root-chat-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("root-chat-input");
+  const send = $("root-chat-send");
+  const status = $("root-chat-status");
+  const content = input.value.trim();
+  if (!content) return;
+  const userMessage = { role: "user", content };
+  rootChatMessages.push(userMessage);
+  appendRootChatMessage("user", content);
+  input.value = "";
+  send.disabled = true;
+  status.textContent = "thinking";
+  setRootChatOffer(null);
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: rootChatMessages,
+        personality: $("root-chat-personality").value,
+        maxOutputTokens: Number($("root-chat-max").value || 900),
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    rootChatMessages.push(body.message);
+    appendRootChatMessage("assistant", body.message.content);
+    setRootChatOffer(body.goblintownOffer);
+    status.textContent = body.lootId ? "saved " + body.lootId : "ready";
+  } catch (err) {
+    status.textContent = err.message || String(err);
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+});
+
+$("root-chat-offer-run").onclick = () => startGoblintownFromChat(rootChatOfferedTask);
+
 /* Goblin pile w/ personality labels (set per goblin from pack:goblin event) */
 const goblinByIndex = {};
 const goblinByLootId = {};
 const specialistByIndex = {};
 const specialistByLootId = {};
+const goblinImageCache = new Map();
+
+function pickGoblinVariant() {
+  const roll = Math.random();
+  let cursor = 0;
+  for (const entry of GOBLIN_VARIANT_WEIGHTS) {
+    cursor += entry.weight;
+    if (roll <= cursor) return entry.variant;
+  }
+  return GOBLIN_VARIANT_WEIGHTS[GOBLIN_VARIANT_WEIGHTS.length - 1].variant;
+}
+
+function getGoblinSheet(variant, action) {
+  const byVariant = GOBLIN_ACTION_SHEETS[variant] || GOBLIN_ACTION_SHEETS.green;
+  return byVariant[action] || byVariant["come-out"];
+}
+
+function loadGoblinSheet(src) {
+  if (!goblinImageCache.has(src)) {
+    goblinImageCache.set(src, loadPigeonSheet(src));
+  }
+  return goblinImageCache.get(src);
+}
+
+function cleanupGoblinSlot(slot) {
+  if (!slot) return;
+  if (slot.rafId) cancelAnimationFrame(slot.rafId);
+  if (slot.actionTimer) clearTimeout(slot.actionTimer);
+  if (slot.goHomeTimer) clearTimeout(slot.goHomeTimer);
+  slot.rafId = 0;
+  slot.actionTimer = 0;
+  slot.goHomeTimer = 0;
+}
+
+function drawGoblinFrame(slot) {
+  if (!slot || !slot.ctx || !slot.canvas || !slot.image) return;
+  const order = slot.frameOrder && slot.frameOrder.length ? slot.frameOrder : [0];
+  const rawFrame = order[slot.frameCursor % order.length] || 0;
+  const frame = Math.max(0, Math.min(rawFrame, slot.frames - 1));
+  const frameW = Math.floor(slot.image.naturalWidth / slot.frames);
+  const frameH = slot.image.naturalHeight;
+  if (!frameW || !frameH) return;
+
+  const dw = slot.canvas.width;
+  const dh = slot.canvas.height;
+  const scale = Math.min(dw / frameW, dh / frameH);
+  const drawW = frameW * scale;
+  const drawH = frameH * scale;
+  const dx = (dw - drawW) / 2;
+  const dy = dh - drawH;
+
+  slot.ctx.clearRect(0, 0, dw, dh);
+  slot.ctx.imageSmoothingEnabled = false;
+  slot.ctx.drawImage(slot.image, frame * frameW, 0, frameW, frameH, dx, dy, drawW, drawH);
+}
+
+function tickGoblinAction(slot, ts) {
+  if (!slot || !slot.image) return;
+  if (!slot.lastTickMs) slot.lastTickMs = ts;
+  const delta = Math.max(0, ts - slot.lastTickMs);
+  slot.lastTickMs = ts;
+  const frameMs = 1000 / Math.max(1, slot.fps || 10);
+  slot.frameAccumulatorMs += delta;
+
+  while (slot.frameAccumulatorMs >= frameMs) {
+    slot.frameAccumulatorMs -= frameMs;
+    if (slot.frameCursor < slot.frameOrder.length - 1) {
+      slot.frameCursor += 1;
+    } else if (slot.loop) {
+      slot.frameCursor = 0;
+    }
+  }
+
+  drawGoblinFrame(slot);
+  if (slot.loop || slot.frameCursor < slot.frameOrder.length - 1) {
+    slot.rafId = requestAnimationFrame((nextTs) => tickGoblinAction(slot, nextTs));
+  } else {
+    slot.rafId = 0;
+  }
+}
+
+async function holdGoblinStanding(slot) {
+  if (!slot || slot.wrap.dataset.home === "true") return;
+  cleanupGoblinSlot(slot);
+  const token = ++slot.actionToken;
+  const sheet = getGoblinSheet(slot.variant, "come-out");
+  try {
+    const image = await loadGoblinSheet(sheet.src);
+    if (token !== slot.actionToken) return;
+    slot.image = image;
+    slot.frames = sheet.frames;
+    slot.frameOrder = [sheet.frames - 1];
+    slot.frameCursor = 0;
+    slot.loop = false;
+    slot.el.dataset.action = "standing";
+    slot.el.dataset.state = slot.el.dataset.state === "winner" ? "winner" : "idle";
+    drawGoblinFrame(slot);
+  } catch {
+    slot.el.classList.remove("goblin-sprite-animated");
+  }
+}
+
+async function playGoblinAction(slot, action, options) {
+  if (!slot) return;
+  options = options || {};
+  cleanupGoblinSlot(slot);
+  const token = ++slot.actionToken;
+  const sheet = getGoblinSheet(slot.variant, action);
+  slot.wrap.dataset.home = "false";
+  slot.el.dataset.action = action;
+  slot.el.dataset.state = options.state || "active";
+  try {
+    const image = await loadGoblinSheet(sheet.src);
+    if (token !== slot.actionToken) return;
+    slot.image = image;
+    slot.frames = sheet.frames;
+    slot.frameOrder = buildLinearFrameOrder(sheet.frames);
+    slot.frameCursor = 0;
+    slot.frameAccumulatorMs = 0;
+    slot.lastTickMs = 0;
+    slot.fps = sheet.fps;
+    slot.loop = !!options.loop;
+    drawGoblinFrame(slot);
+    slot.rafId = requestAnimationFrame((ts) => tickGoblinAction(slot, ts));
+    const duration = options.durationMs || Math.ceil((sheet.frames / sheet.fps) * 1000);
+    slot.actionTimer = setTimeout(() => {
+      if (token !== slot.actionToken) return;
+      if (options.homeOnEnd) {
+        cleanupGoblinSlot(slot);
+        slot.wrap.dataset.home = "true";
+        slot.wrap.dataset.specialist = "false";
+        slot.el.dataset.state = "home";
+        slot.tag.textContent = slot.personality || slot.variant;
+        clearThinkingBubble("goblin#" + slot.index);
+      } else if (options.loop) {
+        holdGoblinStanding(slot);
+      }
+    }, duration + 80);
+  } catch {
+    slot.el.classList.remove("goblin-sprite-animated");
+  }
+}
+
+function goHomeGoblinSlot(slot, delayMs) {
+  if (!slot || slot.wrap.dataset.home === "true") return;
+  if (slot.goHomeTimer) clearTimeout(slot.goHomeTimer);
+  const delay = Math.max(0, delayMs || 0);
+  slot.goHomeTimer = setTimeout(() => {
+    slot.goHomeTimer = 0;
+    clearAllTextBubbles();
+    playGoblinAction(slot, "go-home", { homeOnEnd: true, state: "idle" });
+  }, delay);
+}
+
+function goHomeAllGoblins(delayMs) {
+  clearAllTextBubbles();
+  Object.values(goblinByIndex).forEach((slot) => goHomeGoblinSlot(slot, delayMs || 0));
+}
+
+let goblinExplosionToken = 0;
+
+function hideGoblinExplosion() {
+  goblinExplosionToken += 1;
+  if (goblinExplosion) goblinExplosion.classList.remove("active");
+  if (goblinExplosionCtx && goblinExplosion) {
+    goblinExplosionCtx.clearRect(0, 0, goblinExplosion.width, goblinExplosion.height);
+  }
+}
+
+function goblinSlotsForSpecialistMapping() {
+  const slots = Object.values(goblinByIndex);
+  const visible = slots.filter((slot) => slot && slot.wrap.dataset.home !== "true");
+  return visible.length ? visible : slots;
+}
+
+function specialistSlotForIndex(index) {
+  const slots = goblinSlotsForSpecialistMapping();
+  if (!slots.length) return null;
+  return slots[Math.abs(index || 0) % slots.length];
+}
+
+function resetGoblinSpecialistPresentation() {
+  hideGoblinExplosion();
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
+  Object.values(goblinByIndex).forEach((slot) => {
+    slot.wrap.dataset.specialist = "false";
+    slot.tag.textContent = slot.personality || slot.variant;
+  });
+}
+
+function markGoblinSpecialists(count) {
+  const slots = goblinSlotsForSpecialistMapping();
+  if (!slots.length) return;
+  const visible = Math.min(Math.max(1, count || 1), slots.length);
+  Object.values(goblinByIndex).forEach((slot) => {
+    slot.wrap.dataset.specialist = "false";
+  });
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
+  for (let i = 0; i < visible; i++) {
+    const slot = specialistSlotForIndex(i);
+    if (!slot) continue;
+    slot.wrap.dataset.specialist = "true";
+    slot.tag.textContent = "specialist";
+    if (slot.el.dataset.state !== "winner") slot.el.dataset.state = "active";
+    specialistByIndex[i] = slot;
+  }
+}
+
+async function playGoblinExplosion() {
+  if (!goblinExplosion || !goblinExplosionCtx) return;
+  const token = ++goblinExplosionToken;
+  const sheet = GOBLIN_EXPLOSION_SHEET;
+  try {
+    const image = await loadGoblinSheet(sheet.src);
+    if (token !== goblinExplosionToken) return;
+    goblinExplosion.classList.add("active");
+    const frameW = image.naturalWidth / sheet.cols;
+    const frameH = image.naturalHeight / sheet.rows;
+    const drawFrame = (frame) => {
+      const col = frame % sheet.cols;
+      const row = Math.floor(frame / sheet.cols);
+      const dw = goblinExplosion.width;
+      const dh = goblinExplosion.height;
+      const scale = Math.min(dw / frameW, dh / frameH);
+      const drawW = frameW * scale;
+      const drawH = frameH * scale;
+      const dx = (dw - drawW) / 2;
+      const dy = (dh - drawH) / 2;
+      goblinExplosionCtx.clearRect(0, 0, dw, dh);
+      goblinExplosionCtx.imageSmoothingEnabled = true;
+      goblinExplosionCtx.drawImage(
+        image,
+        col * frameW,
+        row * frameH,
+        frameW,
+        frameH,
+        dx,
+        dy,
+        drawW,
+        drawH,
+      );
+    };
+    const frameMs = 1000 / Math.max(1, sheet.fps || 12);
+    const startedAt = performance.now();
+    const tick = (ts) => {
+      if (token !== goblinExplosionToken) return;
+      const frame = Math.min(sheet.totalFrames - 1, Math.floor((ts - startedAt) / frameMs));
+      drawFrame(frame);
+      if (frame < sheet.totalFrames - 1) {
+        requestAnimationFrame(tick);
+      } else {
+        setTimeout(() => {
+          if (token === goblinExplosionToken) hideGoblinExplosion();
+        }, 180);
+      }
+    };
+    requestAnimationFrame(tick);
+  } catch {
+    hideGoblinExplosion();
+  }
+}
+
+function playGoblinSpecialistTransition(count) {
+  playGoblinExplosion();
+  setTimeout(() => markGoblinSpecialists(count), 260);
+}
 
 /* Live "thinking" bubbles (one per slot, updated in place) */
 const thinkingBubbles = {};
@@ -9539,6 +11754,15 @@ function resolveThinkingTarget(slot) {
 function updateThinkingBubble(slot, text) {
   const target = resolveThinkingTarget(slot);
   if (!target) return;
+  if (slot.indexOf("goblin#") === 0 || slot.indexOf("specialist#") === 0) {
+    const idx = +slot.slice("goblin#".length);
+    const goblin = slot.indexOf("specialist#") === 0
+      ? specialistSlotForIndex(+slot.slice("specialist#".length))
+      : goblinByIndex[idx] || goblinByIndex[idx % Math.max(1, Object.keys(goblinByIndex).length)];
+    if (goblin && goblin.wrap.dataset.home !== "true" && goblin.el.dataset.action !== "argue") {
+      playGoblinAction(goblin, "argue", { loop: true, durationMs: 1600 });
+    }
+  }
   let b = thinkingBubbles[slot];
   if (!b) {
     b = document.createElement("div");
@@ -9547,59 +11771,94 @@ function updateThinkingBubble(slot, text) {
     thinkingBubbles[slot] = b;
   }
   const tankRect = tank.getBoundingClientRect();
-  const cRect = target.getBoundingClientRect();
-  const cx = cRect.left - tankRect.left + cRect.width / 2;
-  const cy = cRect.top  - tankRect.top;
-  const onLeft = cx < tankRect.width / 2;
-  const bw = 280;
-  let left = onLeft ? cx + 14 : cx - bw + 14;
-  left = Math.max(8, Math.min(tankRect.width - bw - 8, left));
-  let top = cy - 90;
-  if (top < 8) top = cy + cRect.height + 12;
-  b.style.left = left + "px";
-  b.style.top = top + "px";
   // Show tail of streaming text so the bubble doesn't grow unbounded
   const tail = text.length > 240 ? "…" + text.slice(-240) : text;
   b.textContent = tail;
+  positionBubbleAboveTarget(b, target, Math.min(280, tankRect.width - 16));
 }
 function clearThinkingBubble(slot) {
   const b = thinkingBubbles[slot];
   if (b) {
     b.remove();
     delete thinkingBubbles[slot];
+    layoutBubbleLayer();
   }
 }
 function clearAllThinkingBubbles() {
   Object.keys(thinkingBubbles).forEach(clearThinkingBubble);
 }
+
+function clearAllTextBubbles() {
+  activeBubbles.splice(0).forEach((bubble) => bubble.remove());
+  Object.keys(thinkingBubbles).forEach((slot) => {
+    const bubble = thinkingBubbles[slot];
+    if (bubble) bubble.remove();
+    delete thinkingBubbles[slot];
+  });
+  bubbleLayer.querySelectorAll(".bubble,.think-bubble").forEach((bubble) => bubble.remove());
+  layoutBubbleLayer();
+}
 function renderGoblinSlots(packSize) {
+  Object.values(goblinByIndex).forEach(cleanupGoblinSlot);
+  hideGoblinExplosion();
   goblinPile.innerHTML = "";
   Object.keys(goblinByIndex).forEach(k => delete goblinByIndex[k]);
   Object.keys(goblinByLootId).forEach(k => delete goblinByLootId[k]);
-  const visible = Math.min(packSize, 3);
+  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
+  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
+  const visible = Math.max(1, Math.floor(packSize || 1));
   for (let i = 0; i < visible; i++) {
+    const variant = pickGoblinVariant();
     const wrap = document.createElement("div");
     wrap.className = "goblin-wrap";
+    wrap.dataset.home = "true";
+    wrap.dataset.specialist = "false";
     const div = document.createElement("div");
-    div.className = "creature goblin";
-    div.dataset.state = "idle";
+    div.className = "creature goblin goblin-sprite-animated";
+    div.dataset.state = "home";
+    div.dataset.variant = variant;
     div.style.setProperty("--sway-dur", (3 + Math.random() * 2.5).toFixed(2) + "s");
     div.style.setProperty("--sway-x", irand(2,4) + "px");
     div.style.setProperty("--sway-delay", (-Math.random() * 3).toFixed(2) + "s");
-    div.innerHTML = '<span class="emoji">👺</span>';
+    const canvas = document.createElement("canvas");
+    canvas.className = "goblin-sprite";
+    canvas.width = 128;
+    canvas.height = 128;
+    canvas.setAttribute("aria-hidden", "true");
+    div.appendChild(canvas);
+    const emoji = document.createElement("span");
+    emoji.className = "emoji";
+    emoji.textContent = "👺";
+    div.appendChild(emoji);
     const tag = document.createElement("span");
     tag.className = "personality";
-    tag.textContent = "—";
+    tag.textContent = variant;
     wrap.appendChild(div);
     wrap.appendChild(tag);
     goblinPile.appendChild(wrap);
-    goblinByIndex[i] = { el: div, tag, lootId: null, personality: null };
-  }
-  if (packSize > 3) {
-    const badge = document.createElement("div");
-    badge.className = "badge";
-    badge.textContent = "+" + (packSize - 3);
-    goblinPile.appendChild(badge);
+    goblinByIndex[i] = {
+      el: div,
+      wrap,
+      canvas,
+      ctx: canvas.getContext("2d"),
+      tag,
+      index: i,
+      variant,
+      lootId: null,
+      personality: null,
+      image: null,
+      frames: 1,
+      fps: 10,
+      frameOrder: [0],
+      frameCursor: 0,
+      frameAccumulatorMs: 0,
+      lastTickMs: 0,
+      rafId: 0,
+      actionTimer: 0,
+      goHomeTimer: 0,
+      actionToken: 0,
+      loop: false,
+    };
   }
 }
 
@@ -9607,35 +11866,10 @@ function setGoblinAll(state) {
   Object.values(goblinByIndex).forEach(g => g.el.dataset.state = state);
 }
 
-function renderSpecialistSlots(count) {
-  goblinPile.innerHTML = "";
-  Object.keys(specialistByIndex).forEach(k => delete specialistByIndex[k]);
-  Object.keys(specialistByLootId).forEach(k => delete specialistByLootId[k]);
-  const visible = Math.min(Math.max(1, count || 1), 3);
-  for (let i = 0; i < visible; i++) {
-    const wrap = document.createElement("div");
-    wrap.className = "goblin-wrap";
-    const div = document.createElement("div");
-    div.className = "creature goblin";
-    div.dataset.state = "idle";
-    div.style.setProperty("--sway-dur", (3 + Math.random() * 2.5).toFixed(2) + "s");
-    div.style.setProperty("--sway-x", irand(2,4) + "px");
-    div.style.setProperty("--sway-delay", (-Math.random() * 3).toFixed(2) + "s");
-    div.innerHTML = '<span class="emoji">🧐</span>';
-    const tag = document.createElement("span");
-    tag.className = "personality";
-    tag.textContent = "specialist";
-    wrap.appendChild(div);
-    wrap.appendChild(tag);
-    goblinPile.appendChild(wrap);
-    specialistByIndex[i] = { el: div, tag, lootId: null };
-  }
-}
-
 function resetCreatures() {
   ["c-raccoon","c-gremlin","c-troll","c-pigeon"].forEach(id => setState(id,"idle"));
   setState("c-ogre","cave");
-  setGoblinAll("idle");
+  goHomeAllGoblins(0);
 }
 
 /* First-line snippet helper */
@@ -10219,6 +12453,7 @@ $("resume-start").onclick = async () => {
     hideResumePanel();
     const packSize = resumeRecord && resumeRecord.packSize ? resumeRecord.packSize : 3;
     lastTask = resumeRecord ? resumeRecord.task : lastTask;
+    showTankMode();
     resetRunStage(isPlan, packSize);
     setLaunchButtonsDisabled(true);
     $("clock").textContent = isPlan ? "plan running" : "rite running";
@@ -10327,7 +12562,7 @@ function openThesisForm() {
   setTimeout(() => $("thesis-subject").focus(), 50);
 }
 function closeThesisForm() { $("thesis-overlay").classList.remove("open"); }
-$("btn-rite").onclick = () => openRiteForm(false);
+$("btn-rite").onclick = startNewRiteChatFlow;
 $("btn-thesis").onclick = openThesisForm;
 $("btn-plan").onclick = () => openRiteForm(true);
 $("rf-cancel").onclick = closeRiteForm;
@@ -10363,6 +12598,7 @@ $("rite-form").addEventListener("submit", async (e) => {
   closeRiteForm();
   hideResumePanel();
   lastTask = payload.task;
+  showTankMode();
   setLaunchButtonsDisabled(true);
   $("clock").textContent = isPlan ? "plan running" : "rite running";
   resetRunStage(isPlan, payload.packSize);
@@ -10404,6 +12640,7 @@ $("thesis-form").addEventListener("submit", async (e) => {
   closeThesisForm();
   hideResumePanel();
   lastTask = "Thesis: " + (payload.subject || "");
+  showTankMode();
   setLaunchButtonsDisabled(true);
   $("clock").textContent = "thesis running";
   resetRunStage(false, 3);
@@ -10434,6 +12671,7 @@ $("thesis-form").addEventListener("submit", async (e) => {
 let replaying = false;
 const replayLatestThinking = {};
 function openStream(runId, isPlan, opts) {
+  showTankMode();
   if (activeStream) { activeStream.close(); activeStream = null; }
   const isAttach = !!(opts && opts.attach);
   const terminalAttach = !!(opts && opts.terminal);
@@ -10518,6 +12756,7 @@ function openStream(runId, isPlan, opts) {
     setTimeout(() => {
       ["c-raccoon","c-gremlin","c-troll","c-pigeon"].forEach(id => setState(id,"idle"));
       setState("c-ogre","cave");
+      goHomeAllGoblins(0);
       hideDag();
     }, 4000);
     if (d.riteId) {
@@ -10533,7 +12772,13 @@ function openStream(runId, isPlan, opts) {
         } catch {}
       }
       showResultFromIds(d.riteId, lootId, d.outcome, lastTask);
+      appendRootChatMessage(
+        "system",
+        "Goblintown finished: " + d.outcome + (d.riteId ? " (" + d.riteId + ")" : ""),
+        d.riteId ? { href: "/rite/" + d.riteId } : null,
+      );
     }
+    setTimeout(showChatMode, 1200);
   });
   es.addEventListener("error", (ev) => {
     if (terminalAttach && replayEnded) {
@@ -10548,6 +12793,7 @@ function openStream(runId, isPlan, opts) {
     activeStream = null;
     setLaunchButtonsDisabled(false);
     $("clock").textContent = "idle";
+    goHomeAllGoblins(300);
     setTimeout(() => refreshResumePanel(runId, isPlan), 350);
   });
 }
@@ -10559,25 +12805,35 @@ async function handleStep(step, opts) {
       updateThinkingBubble(step.slot, step.text);
       return;
     case "scavenge:start":
-      setState("c-raccoon","active");
+      cueRaccoonWork();
       setTicker("raccoon scanning corpus", true);
       dispatchBubble($("c-raccoon"), "foraging " + (step.globs || []).join(", "));
       break;
     case "scavenge:done":
-      scurryVariant();
+      cueRaccoonScurryAfterWake();
       setTicker("raccoon → goblins", true);
       dispatchBubble($("c-raccoon"), "scanned " + step.fileCount + " file" + (step.fileCount === 1 ? "" : "s"));
       break;
     case "artifacts:loaded":
+      cueRaccoonWork({ scurry: !replay });
       setTicker("raccoon recalled " + step.count + " prior artifact" + (step.count === 1 ? "" : "s"), true);
       dispatchBubble($("c-raccoon"), "📜 loaded " + step.count + " prior artifact" + (step.count === 1 ? "" : "s"));
       break;
     case "pack:start":
       setTicker("pack of " + step.size + " dispatched", true);
-      setGoblinAll("active");
+      renderGoblinSlots(step.size);
+      Object.values(goblinByIndex).forEach((slot, i) => {
+        if (!replay) {
+          playGoblinAction(slot, "come-out", { state: "active", durationMs: 1300 + i * 90 });
+        } else {
+          slot.wrap.dataset.home = "false";
+          slot.el.dataset.state = "active";
+          holdGoblinStanding(slot);
+        }
+      });
       break;
     case "pack:goblin": {
-      const slot = goblinByIndex[step.index] || goblinByIndex[step.index % 3];
+      const slot = goblinByIndex[step.index] || goblinByIndex[step.index % Math.max(1, Object.keys(goblinByIndex).length)];
       if (slot) {
         slot.lootId = step.lootId;
         goblinByLootId[step.lootId] = slot;
@@ -10585,7 +12841,7 @@ async function handleStep(step, opts) {
           slot.personality = step.personality;
           slot.tag.textContent = step.personality;
         }
-        if (!replay) hopGoblin(slot.el);
+        if (!replay) playGoblinAction(slot, "argue", { durationMs: 1600 });
         clearThinkingBubble("goblin#" + step.index);
         if (!replay) {
           const snippet = await fetchLootSnippet(step.lootId, 70);
@@ -10596,7 +12852,10 @@ async function handleStep(step, opts) {
     }
     case "debate:start":
       setTicker("debate round " + step.round + " · " + step.size + " goblins exchanging", true);
-      Object.values(goblinByIndex).forEach((g) => { g.el.dataset.state = "active"; hopGoblin(g.el); });
+      Object.values(goblinByIndex).forEach((slot) => {
+        if (!replay) playGoblinAction(slot, "argue", { loop: true, durationMs: 1800 });
+        else slot.el.dataset.state = "active";
+      });
       break;
     case "debate:goblin": {
       const slot = goblinByIndex[step.index];
@@ -10605,6 +12864,7 @@ async function handleStep(step, opts) {
         goblinByLootId[step.lootId] = slot;
         clearThinkingBubble("goblin#" + step.index);
         if (!replay) {
+          playGoblinAction(slot, "argue", { durationMs: 1600 });
           const snippet = await fetchLootSnippet(step.lootId, 70);
           if (snippet) dispatchBubble(slot.el, "↻ " + snippet);
         }
@@ -10618,11 +12878,17 @@ async function handleStep(step, opts) {
       setState("c-gremlin","active");
       pounceVariant();
       setTicker("gremlin attacking", true);
+      Object.values(goblinByIndex).forEach((slot) => {
+        if (!replay) playGoblinAction(slot, "defend", { loop: true, durationMs: 1800 });
+        else slot.el.dataset.state = "active";
+      });
       break;
     case "chaos:done": {
       if (!replay) {
         const snippet = await fetchLootSnippet(step.gremlinId, 70);
         if (snippet) dispatchBubble($("c-gremlin"), snippet, "attack");
+        const slot = goblinByLootId[step.goblinId];
+        if (slot) playGoblinAction(slot, "defend", { durationMs: 1400 });
       }
       setState("c-gremlin","idle");
       break;
@@ -10670,8 +12936,8 @@ async function handleStep(step, opts) {
         break;
       }
       setTicker("clusters: " + names, true);
-      // Replace the failed pack with specialist 🧐 sprites
-      renderSpecialistSlots(step.clusters.length);
+      if (replay) markGoblinSpecialists(step.clusters.length);
+      else playGoblinSpecialistTransition(step.clusters.length);
       break;
     }
     case "specialist:cluster:empty":
@@ -10683,8 +12949,10 @@ async function handleStep(step, opts) {
       dispatchBubble($("c-troll"), "specialist error: " + String(step.message || "").slice(0, 90), "fail");
       break;
     case "specialist:spawn": {
+      specialistByIndex[step.index] = specialistSlotForIndex(step.index);
       const slot = specialistByIndex[step.index];
       if (slot) {
+        slot.wrap.dataset.specialist = "true";
         slot.tag.textContent = "specialist";
         slot.el.dataset.state = "active";
         if (!replay) {
@@ -10696,7 +12964,8 @@ async function handleStep(step, opts) {
       break;
     }
     case "specialist:done": {
-      const slot = specialistByIndex[step.index];
+      const slot = specialistByIndex[step.index] || specialistSlotForIndex(step.index);
+      if (slot) specialistByIndex[step.index] = slot;
       specialistByLootId[step.lootId] = slot;
       clearThinkingBubble("specialist#" + step.index);
       if (!replay && slot) {
@@ -10706,8 +12975,9 @@ async function handleStep(step, opts) {
       break;
     }
     case "specialist:verdict": {
-      const slot = specialistByIndex[step.index];
+      const slot = specialistByIndex[step.index] || specialistSlotForIndex(step.index);
       if (slot) {
+        specialistByIndex[step.index] = slot;
         if (step.verdict.passed) {
           slot.el.dataset.state = "winner";
           dispatchBubble(slot.el, "👑 specialist won · " + step.verdict.score.toFixed(2), "win");
@@ -10746,6 +13016,8 @@ async function handleStep(step, opts) {
       dispatchBubble($("c-pigeon"), "📜 scribing this rite...");
       break;
     case "scribe:done":
+      setState("c-pigeon","idle");
+      queuePigeonPeckSoon(350);
       setTicker("artifact " + step.artifactId + " stashed", true);
       dispatchBubble($("c-pigeon"), "📜 " + step.artifactId);
       break;
@@ -10759,6 +13031,7 @@ async function handleStep(step, opts) {
       break;
     case "rite:done":
       setTicker("rite complete · outcome=" + step.outcome);
+      goHomeAllGoblins(1200);
       break;
   }
 }
@@ -10777,7 +13050,7 @@ async function attachToRunFromUrl() {
       runId = remembered.runId;
       history.replaceState(null, "", "/?run=" + encodeURIComponent(runId));
     } else {
-      loadLastResult();
+      showChatMode();
       return;
     }
   }
@@ -10786,7 +13059,7 @@ async function attachToRunFromUrl() {
     if (!r.ok) {
       setTicker("run " + runId + " not found");
       clearRememberedRun(runId);
-      loadLastResult();
+      showChatMode();
       return;
     }
     const record = await r.json();
@@ -10801,6 +13074,7 @@ async function attachToRunFromUrl() {
       if (ps && ps.data && typeof ps.data.size === "number") packSize = ps.data.size;
     }
     resetRunStage(isPlan, packSize);
+    showTankMode();
 
     const status = runStatus(record);
     const label = record.done ? status : "watching live";
@@ -10816,7 +13090,7 @@ async function attachToRunFromUrl() {
     openStream(runId, isPlan, { attach: true, terminal: !!record.done });
   } catch (e) {
     setTicker("attach failed: " + (e.message || e));
-    loadLastResult();
+    showChatMode();
   }
 }
 attachToRunFromUrl();
