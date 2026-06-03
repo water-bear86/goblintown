@@ -1,8 +1,0 @@
-release/
-build/*.icns
-build/*.ico
-build/*.png
-dist/
-node_modules/
-.goblintown/
-.superpowers/
