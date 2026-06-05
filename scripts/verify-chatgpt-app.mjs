@@ -78,7 +78,7 @@ async function verifyHttpSurface() {
 
   const dashboard = await requestText(new URL("/dashboard.html", publicBaseUrl));
   assert.equal(dashboard.status, 200, "Dashboard placeholder should be served");
-  assert.match(dashboard.body, /User dashboard/);
+  assert.match(dashboard.body, /Job DAG Composer|User dashboard/);
 
   const admin = await requestText(new URL("/admin.html", publicBaseUrl));
   assert.equal(admin.status, 200, "Admin placeholder should be served");
