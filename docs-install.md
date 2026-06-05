@@ -22,6 +22,15 @@ Runtime base for hosted mode:
 - MCP URL: `https://goblintown-mcp.vercel.app/mcp`
 - Health: `https://goblintown-mcp.vercel.app/healthz`
 
+Hosted startup checks (no local terminal required):
+
+```bash
+npm run verify:chatgpt:hosted
+```
+
+This validates the Streamable HTTP `/mcp` endpoint and required tool/resource
+surface on production.
+
 ## Local ChatGPT App development
 
 ```bash
@@ -101,6 +110,12 @@ npm run verify:vercel
 npm run verify:smoke
 ```
 
+Preferred alias:
+
+```bash
+npm run verify:chatgpt:hosted
+```
+
 ### Local mode
 
 ```bash
@@ -108,6 +123,12 @@ cd /Users/angus/goblintown/repo/goblintown/chatgptapp
 npm ci
 npm run build
 npm run verify:chatgpt -- --mcp-url http://127.0.0.1:8787/mcp
+
+Preferred local alias:
+
+```bash
+npm run verify:chatgpt:local
+```
 ```
 
 ### Expected verification markers
@@ -140,3 +161,10 @@ Expected checks:
 - Dedicated plugin packaging lives in `goblintownlol/codex-plugin`.
 - Desktop runtime stays in `goblintownlol/backrooms`.
 - Do not duplicate adapter setup in unrelated repos.
+### Troubleshooting startup / transport failures
+
+- If install/serve exits immediately with transport errors, check that your base URL is HTTPS and reachable.
+- If ChatGPT reports `Connection closed` or `Method not allowed`, verify:
+  - `GET /mcp` is only used in browsers and returns `405` with `Allow: POST`.
+  - `POST /mcp` reaches `/healthz` tool list with expected mode (`hosted` vs `local`).
+- In hosted mode, confirm `GOBLINTOWN_CHATGPT_PUBLIC_BASE_URL` is exactly the public deployment base (for example `https://goblintown-mcp.vercel.app`).

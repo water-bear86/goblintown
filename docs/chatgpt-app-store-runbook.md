@@ -32,6 +32,12 @@ npm run -s verify:vercel
 npm run -s verify:smoke
 ```
 
+Shortcut aliases:
+
+```bash
+npm run -s verify:chatgpt:hosted
+```
+
 If all three checks pass, the hosted surface includes:
 
 - Health response with the expected MCP URL
@@ -60,6 +66,12 @@ Then run `verify:chatgpt` with that public URL:
 
 ```bash
 npm run -s verify:chatgpt -- --mcp-url https://your-tunnel.example/mcp
+```
+
+Shortcut alias:
+
+```bash
+npm run -s verify:chatgpt:local
 ```
 
 ## Manual reviewer flow (login → DAG → run → artifact → settings → logout)

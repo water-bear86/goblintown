@@ -374,10 +374,18 @@ export function createGoblintownChatGptExpressApp(
           jsonrpc: "2.0",
           error: {
             code: -32603,
-            message: err instanceof Error ? err.message : String(err),
+            message: resolveChatGptMcpErrorMessage(err, currentBaseUrl, opts.hostedMode),
           },
           id: null,
         });
+      }
+      console.error(
+        `chatgpt mcp startup error [${opts.hostedMode ? "hosted" : "local"}] ${currentBaseUrl}`,
+        err,
+      );
+    } finally {
+      if (!res.writableEnded) {
+        void transport.close();
       }
     }
   });
@@ -420,6 +428,29 @@ export function createGoblintownChatGptExpressApp(
     },
     addAllowedHost,
   };
+}
+
+function resolveChatGptMcpErrorMessage(
+  err: unknown,
+  baseUrl: string,
+  hostedMode?: boolean,
+): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.includes("Method not allowed") || raw.includes("Not Found")) {
+    return raw;
+  }
+
+  const mode = hostedMode ? "hosted" : "local";
+  if (raw.includes("ENOENT") || raw.includes("spawn")) {
+    return `${raw}. Check Node runtime and dependency startup assumptions for ${mode} ChatGPT adapter on ${baseUrl}.`;
+  }
+  if (raw.includes("ECONNREFUSED") || raw.includes("connect")) {
+    return `${raw}. If this is in local mode, confirm the adapter is reachable and ${baseUrl}/mcp is available. If hosted, confirm deployment health and proxy routes are healthy.`;
+  }
+  if (raw.includes("Connection closed")) {
+    return `${raw} while servicing ${mode} /mcp request. Retry with a valid POST request to ${baseUrl}/mcp.`;
+  }
+  return `${raw} (mode=${mode}, endpoint=${baseUrl}). Review startup logs for the adapter and tank bridge.`;
 }
 
 export async function startGoblintownChatGptApp(
