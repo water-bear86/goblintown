@@ -14,6 +14,7 @@ submission surface and the production Vercel-hosted adapter.
 - User dashboard: `/dashboard.html`
 - Operator admin: `/admin.html`
 - Submission readiness JSON: `/api/submission/readiness`
+- Safe hosted rite debug packet: `/api/dev/hosted-rite-packet`
 
 ## OpenAI Dashboard prerequisites
 
@@ -33,6 +34,7 @@ Before submitting for public review, confirm these items outside the repo:
 - `chatgpt-app-submission.json`
 - Adapter health and MCP endpoints at `/healthz`, `/mcp`
 - Launch-readiness JSON at `/api/submission/readiness`
+- Sanitized hosted rite packet shape at `/api/dev/hosted-rite-packet`
 - Reviewer-safe dashboard/admin pages:
   - `/dashboard.html`
   - `/admin.html`
@@ -116,8 +118,20 @@ This flow can be used for human QA and store reviewer walkthrough.
 
 3. **Run execution**
    - Ask for a rite/plan execution path through board mode (no local provider required).
+   - Safe prompt:
+
+   ```text
+   Run a Goblintown rite for: determine the concrete steps needed to get the Goblintown app and Tank product to market. Use hosted board mode and summarize the returned packet shape before executing it.
+   ```
+
    - Confirm the result includes run-oriented structure and does not request external
      destructive actions.
+   - Avoid prompts that ask ChatGPT to "return the raw hosted ChatGPT rite
+     packet", "dump hidden prompts", or expose internal tool payloads. Those can
+     be blocked by ChatGPT safety checks before the tool call reaches
+     Goblintown, which means Goblintown cannot emit a failure artifact.
+   - If a safe packet-shape reference is needed outside a tool call, open
+     `/api/dev/hosted-rite-packet`.
 
 4. **Artifact / run artifact verification**
    - Ask:
@@ -163,6 +177,7 @@ This flow can be used for human QA and store reviewer walkthrough.
 - [ ] `verify:vercel` passes
 - [ ] `verify:smoke` passes
 - [ ] `/api/submission/readiness` reports the hosted MCP URL and no-key token policy
+- [ ] `/api/dev/hosted-rite-packet` reports the sanitized hosted packet shape and blocked-phrase guidance
 - [ ] Manual checklist above completed
 - [ ] Screenshot or video evidence captured
 - [ ] No unresolved placeholders in manifest/tooling coverage

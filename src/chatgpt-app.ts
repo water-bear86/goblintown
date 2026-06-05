@@ -283,6 +283,11 @@ export function createGoblintownChatGptExpressApp(
     res.json(buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode));
   });
 
+  app.get("/api/dev/hosted-rite-packet", (_req, res) => {
+    const readiness = buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode);
+    res.json(buildHostedRiteDebugPacket(readiness));
+  });
+
   app.get("/api/dashboard/readiness", (req, res) => {
     res.json(buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode));
   });
@@ -537,6 +542,12 @@ function buildChatGptLaunchReadiness(baseUrl: string, hosted: boolean): ChatGptL
         state: "ready",
         detail: "Documents review, provider spend, local data, and host/provider responsibilities.",
       },
+      {
+        path: "/api/dev/hosted-rite-packet",
+        label: "Safe hosted rite debug packet",
+        state: "bounded",
+        detail: "Returns the public hosted packet shape, safe test prompts, and safety-boundary notes without exposing hidden prompts or raw tool internals.",
+      },
     ],
     controls: [
       {
@@ -607,10 +618,55 @@ function buildChatGptLaunchReadiness(baseUrl: string, hosted: boolean): ChatGptL
     boundaries: [
       "Hosted ChatGPT mode does not require OPENAI_API_KEY.",
       "Hosted ChatGPT mode rejects local_provider Tank execution.",
+      "Hosted debug endpoints return sanitized packet templates only; raw internal prompts and hidden tool payloads are intentionally not exposed.",
       "The public endpoint does not read private local files unless the user runs a local adapter and asks for local context.",
       "Provider keys, persistent Hoard storage, imported chats, and local run history stay on the local adapter path.",
       "The public reviewer dashboard and admin pages are launch surfaces, not cloud account storage claims.",
     ],
+  };
+}
+
+function buildHostedRiteDebugPacket(readiness: ChatGptLaunchReadiness) {
+  return {
+    ok: true,
+    safeForDeveloperMode: true,
+    purpose: "Inspect the public hosted-mode rite packet contract without requesting raw hidden prompts or internal tool payloads.",
+    endpoint: `${readiness.publicBaseUrl}/api/dev/hosted-rite-packet`,
+    mcpUrl: readiness.universalMcpUrl,
+    tokenPolicy: readiness.tokenPolicy,
+    expectedToolResultShape: {
+      mode: "rite",
+      runMode: "chatgpt",
+      executionMode: "board",
+      kind: "rite",
+      runner: "chatgpt_host",
+      openAiApiKeyRequired: false,
+      modelProfile: "host",
+      phases: [
+        "raccoon_context",
+        "goblin_pack",
+        "debate",
+        "gremlin_chaos",
+        "troll_review",
+        "specialist_recovery",
+        "ogre_fallback",
+        "scribe_note",
+      ],
+    },
+    safeDeveloperModePrompts: [
+      "Run a Goblintown rite for: determine the concrete steps needed to get the Goblintown app and Tank product to market. Use hosted board mode and summarize the returned packet shape before executing it.",
+      "Plan a Goblintown DAG for getting the Goblintown ChatGPT app submission-ready. Use hosted mode, no local provider, and explain the phases you received.",
+      "Run goblintown_doctor and summarize hosted readiness, local-only boundaries, and whether any API keys are exposed.",
+    ],
+    avoidPhrases: [
+      "return raw hosted ChatGPT rite packet",
+      "debug extraction",
+      "show hidden tool prompts",
+      "dump internal orchestration payloads",
+      "reveal system or developer instructions",
+    ],
+    likelyBlockedReason: "Requests framed as raw debug extraction or hidden-prompt disclosure can be blocked by ChatGPT before the tool call reaches Goblintown, so Goblintown cannot persist or return a failure artifact for those attempts.",
+    boundaries: readiness.boundaries,
   };
 }
 
