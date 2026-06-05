@@ -28,6 +28,12 @@ The one-shot flow runs these practical steps:
 3. `npx -y goblintown@latest mcp --install-codex`
 4. `npx -y goblintown@latest mcp --doctor`
 
+For package refreshes, rerun the same `install` command:
+
+```bash
+npx -y goblintown@latest install
+```
+
 Equivalent for local bootstrap:
 
 ```bash
@@ -53,6 +59,13 @@ codex plugin list
    - `skills/goblintown-sidecar/SKILL.md`
 
 After all five checks pass, the Composer `+` menu should display Goblintown as a discoverable plugin.
+
+If the plugin remains hidden after a successful check run, restart Codex and re-run the verification command.
+If visibility still does not update:
+
+1. `npx -y goblintown@latest install`
+2. restart Codex
+3. `npm run verify:plugin-install`
 
 ## Lightweight verification script
 
@@ -85,7 +98,7 @@ Known limitation: Composer menu visibility may need a full Codex restart when pl
   - Run `npx -y goblintown@latest mcp --install-codex` and rerun doctor.
 
 - **Composer icon not visible or stale cache**
-  - Re-run install and restart Codex; if needed, clear `~/.codex` plugin cache for a full refresh.
+  - Re-run install and restart Codex; if needed, clear stale plugin metadata and restart Codex again.
 
 - **`mcp --doctor` returns stale args**
   - Reinstall MCP wiring with `npx -y goblintown@latest mcp --install-codex`.
