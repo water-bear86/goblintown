@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Goblintown Operator Admin</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f5ef;
+      --ink: #181b1c;
+      --muted: #636866;
+      --line: #c9c3b5;
+      --panel: #ffffff;
+      --accent: #0e7c66;
+      --accent-soft: #d9f0ea;
+      --off: #8e3a34;
+      --off-soft: #f4dfdc;
+      --focus: #f0b429;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfaf6 0%, var(--paper) 100%);
+      color: var(--ink);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(920px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 34px 0;
+      display: grid;
+      gap: 18px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+    .auth,
+    .session,
+    .board {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .auth {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 14px;
+    }
+    .session {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px;
+    }
+    .identity {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .identity img {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: #f0eee8;
+    }
+    .identity span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .identity strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    input {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      font: inherit;
+      background: #fffdf8;
+      color: var(--ink);
+    }
+    input:focus,
+    button:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+    }
+    button {
+      min-height: 42px;
+      border: 1px solid var(--ink);
+      border-radius: 6px;
+      padding: 0 14px;
+      font: inherit;
+      font-weight: 700;
+      background: var(--ink);
+      color: white;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: white;
+      color: var(--ink);
+    }
+    button:disabled {
+      opacity: .55;
+      cursor: wait;
+    }
+    .board {
+      overflow: hidden;
+    }
+    .board-head,
+    .row {
+      display: grid;
+      grid-template-columns: minmax(140px, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+    }
+    .board-head {
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+    .row + .row {
+      border-top: 1px solid #ece7dc;
+    }
+    .agent {
+      display: grid;
+      gap: 3px;
+    }
+    .agent strong {
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    .agent span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .switch {
+      position: relative;
+      display: inline-grid;
+      grid-template-columns: auto 58px;
+      align-items: center;
+      gap: 10px;
+      color: var(--off);
+      font-weight: 800;
+    }
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .track {
+      width: 58px;
+      height: 32px;
+      border-radius: 999px;
+      background: var(--off-soft);
+      border: 1px solid #d9aaa5;
+      position: relative;
+      transition: background .16s ease, border-color .16s ease;
+    }
+    .track::after {
+      content: "";
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--off);
+      position: absolute;
+      top: 3px;
+      left: 4px;
+      transition: transform .16s ease, background .16s ease;
+    }
+    .switch input:checked ~ .track {
+      background: var(--accent-soft);
+      border-color: #98cfc1;
+    }
+    .switch input:checked ~ .track::after {
+      transform: translateX(24px);
+      background: var(--accent);
+    }
+    .switch input:checked ~ .label {
+      color: var(--accent);
+    }
+    .empty {
+      padding: 20px 16px;
+      color: var(--muted);
+    }
+    @media (max-width: 620px) {
+      main { width: min(100% - 20px, 920px); padding-top: 18px; }
+      header { align-items: start; flex-direction: column; }
+      .status { text-align: left; }
+      .auth { grid-template-columns: 1fr; }
+      .session { align-items: stretch; flex-direction: column; }
+      .board-head,
+      .row {
+        grid-template-columns: 1fr;
+      }
+      .switch {
+        justify-content: space-between;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Operator admin</h1>
+      <div class="status" id="status">Locked</div>
+    </header>
+
+    <form class="auth" id="auth-form">
+      <input id="password" type="password" autocomplete="current-password" placeholder="Operator password" />
+      <button id="unlock" type="submit">Unlock</button>
+    </form>
+
+    <section class="session" aria-label="Operator session">
+      <div class="identity">
+        <img id="avatar" alt="" hidden />
+        <div>
+          <strong id="identity-name">Not signed in</strong>
+          <span id="identity-detail">GitHub login is available when configured.</span>
+        </div>
+      </div>
+      <div>
+        <button class="secondary" id="github-login" type="button" hidden>Sign in with GitHub</button>
+        <button class="secondary" id="logout" type="button" hidden>Log out</button>
+      </div>
+    </section>
+
+    <section class="board" aria-label="Agent duty board">
+      <div class="board-head">
+        <span>Agent</span>
+        <span>Duty</span>
+      </div>
+      <div id="rows">
+        <div class="empty">Unlock to load duty state.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const storageKey = "goblintown.operator.password";
+    const form = document.getElementById("auth-form");
+    const password = document.getElementById("password");
+    const unlock = document.getElementById("unlock");
+    const status = document.getElementById("status");
+    const rows = document.getElementById("rows");
+    const login = document.getElementById("github-login");
+    const logout = document.getElementById("logout");
+    const avatar = document.getElementById("avatar");
+    const identityName = document.getElementById("identity-name");
+    const identityDetail = document.getElementById("identity-detail");
+
+    password.value = sessionStorage.getItem(storageKey) || "";
+    checkAuth();
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      sessionStorage.setItem(storageKey, password.value);
+      refresh();
+    });
+
+    login.addEventListener("click", () => {
+      window.location.href = "/api/admin/auth/github/start?returnTo=/admin.html";
+    });
+
+    logout.addEventListener("click", async () => {
+      sessionStorage.removeItem(storageKey);
+      password.value = "";
+      await fetch("/api/admin/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+      rows.innerHTML = '<div class="empty">Unlock to load duty state.</div>';
+      checkAuth();
+    });
+
+    async function request(path, options) {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(options && options.headers ? options.headers : {}),
+      };
+      if (password.value) headers.Authorization = "Bearer " + password.value;
+      const response = await fetch(path, {
+        ...options,
+        credentials: "same-origin",
+        headers,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || response.statusText);
+      return body;
+    }
+
+    async function checkAuth() {
+      try {
+        const response = await fetch("/api/admin/auth/status", { credentials: "same-origin" });
+        const body = await response.json();
+        login.hidden = !body.githubConfigured || body.authenticated;
+        logout.hidden = !body.authenticated;
+        if (body.authenticated && body.user) {
+          identityName.textContent = body.user.name || body.user.login;
+          identityDetail.textContent = "@" + body.user.login;
+          if (body.user.avatarUrl) {
+            avatar.src = body.user.avatarUrl;
+            avatar.hidden = false;
+          }
+          refresh();
+        } else {
+          avatar.hidden = true;
+          identityName.textContent = "Not signed in";
+          identityDetail.textContent = body.githubConfigured
+            ? "Sign in with GitHub, or use the fallback password."
+            : "Use the fallback password.";
+          if (password.value) refresh();
+        }
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    async function refresh() {
+      unlock.disabled = true;
+      status.textContent = "Loading";
+      try {
+        const body = await request("/api/admin/agent-duty");
+        render(body);
+      } catch (err) {
+        rows.innerHTML = '<div class="empty">Locked.</div>';
+        status.textContent = err instanceof Error ? err.message : String(err);
+      } finally {
+        unlock.disabled = false;
+      }
+    }
+
+    function render(state) {
+      const agents = Array.isArray(state.agents) ? state.agents : [];
+      status.textContent = state.source === "github-variable"
+        ? state.repo + " / " + state.variableName
+        : state.source || "memory";
+      if (agents.length === 0) {
+        rows.innerHTML = '<div class="empty">No agents configured.</div>';
+        return;
+      }
+      rows.innerHTML = "";
+      for (const agent of agents) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML =
+          '<div class="agent"><strong></strong><span></span></div>' +
+          '<label class="switch"><input type="checkbox"><span class="label"></span><span class="track"></span></label>';
+        row.querySelector("strong").textContent = agent.label || agent.id;
+        row.querySelector(".agent span").textContent = agent.id;
+        const input = row.querySelector("input");
+        const label = row.querySelector(".label");
+        input.checked = agent.onDuty !== false;
+        label.textContent = input.checked ? "On duty" : "Off duty";
+        input.addEventListener("change", async () => {
+          const next = input.checked;
+          input.disabled = true;
+          label.textContent = next ? "On duty" : "Off duty";
+          status.textContent = "Saving";
+          try {
+            const body = await request("/api/admin/agent-duty", {
+              method: "POST",
+              body: JSON.stringify({ agent: agent.id, onDuty: next }),
+            });
+            render(body);
+          } catch (err) {
+            input.checked = !next;
+            label.textContent = input.checked ? "On duty" : "Off duty";
+            status.textContent = err instanceof Error ? err.message : String(err);
+          } finally {
+            input.disabled = false;
+          }
+        });
+        rows.appendChild(row);
+      }
+    }
+  </script>
+</body>
+</html>

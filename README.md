@@ -167,7 +167,7 @@ goblintown chatgpt serve --port 8787 --public-base-url https://your-tunnel.examp
 Use the public HTTPS `/mcp` URL in ChatGPT Developer Mode. Rite and plan tools
 return the real Goblintown board packet by default; ChatGPT is the host model
 surface that executes the OpenAI-model steps after the tool returns. The adapter
-package lives in `apps/chatgpt/`.
+package lives in this repository.
 
 For production, the repo includes a Vercel-ready hosted adapter. Deploy it with
 `GOBLINTOWN_CHATGPT_PUBLIC_BASE_URL=https://goblintown-mcp.vercel.app`, then use
@@ -175,6 +175,12 @@ For production, the repo includes a Vercel-ready hosted adapter. Deploy it with
 configuration. Hosted mode will not try to launch the local
 Tank. Hosted board execution does not require `OPENAI_API_KEY`; local files,
 local provider spend, and the local Tank stay on the local adapter path.
+
+Runbook and readiness artifacts are documented in:
+
+- [Goblintown ChatGPT app runbook](docs/chatgpt-app-store-runbook.md)
+- `chatgpt-app-submission.json`
+- `npm run -s verify:chatgpt`, `npm run -s verify:vercel`, `npm run -s verify:smoke`
 
 ## Background
 

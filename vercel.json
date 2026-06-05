@@ -1,13 +1,28 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run build",
+  "buildCommand": "true",
   "outputDirectory": "site",
+  "crons": [
+    {
+      "path": "/api/cron/dispatch",
+      "schedule": "0 0 * * *"
+    }
+  ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "dist/**"
+    },
+    "api/cron/dispatch.js": {
+      "maxDuration": 300,
+      "includeFiles": "dist/lib/**"
     }
   },
   "rewrites": [
+    {
+      "source": "/api/cron/dispatch",
+      "destination": "/api/cron/dispatch"
+    },
     {
       "source": "/(.*)",
       "destination": "/api"

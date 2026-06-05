@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { AddressInfo } from "node:net";
@@ -14,6 +15,19 @@ import {
   createGoblintownMcpServer,
   GOBLINTOWN_CHATGPT_WIDGET_URI,
 } from "./mcp.js";
+import {
+  loadAgentDutyState,
+  operatorPassword,
+  operatorPasswordConfigured,
+  setAgentDuty,
+} from "./lib/agent-duty.js";
+import {
+  clearOperatorSession,
+  completeGithubOperatorLogin,
+  getOperatorSession,
+  githubOperatorAuthConfigured,
+  startGithubOperatorLogin,
+} from "./lib/operator-auth.js";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SITE_DIR = join(MODULE_DIR, "..", "site");
@@ -201,7 +215,6 @@ export function createGoblintownChatGptExpressApp(
   const app = createMcpExpressApp({ host, allowedHosts });
   let baseUrl = normalizePublicBaseUrl(opts.publicBaseUrl ?? defaultChatGptPublicBaseUrl());
   app.use("/assets", express.static(SITE_DIR + "/assets"));
-  bindTankProxyRoutes(app, defaultChatGptMcpTankPort());
   const addAllowedHost = (host: string): void => {
     const hostname = normalizeAllowedHostname(host);
     if (hostname && allowedHosts && !allowedHosts.includes(hostname)) {
@@ -230,6 +243,88 @@ export function createGoblintownChatGptExpressApp(
   app.get(["/admin", "/admin.html"], (_req, res) => {
     sendSitePage(res, "admin.html");
   });
+
+  app.get("/api/admin/auth/status", (req, res) => {
+    const session = getOperatorSession(req);
+    res.json({
+      ok: true,
+      authenticated: !!session,
+      githubConfigured: githubOperatorAuthConfigured(),
+      passwordConfigured: operatorPasswordConfigured(),
+      user: session
+        ? {
+            login: session.login,
+            name: session.name,
+            avatarUrl: session.avatarUrl,
+            expiresAt: session.expiresAt,
+          }
+        : undefined,
+    });
+  });
+
+  app.get("/api/admin/auth/github/start", (req, res) => {
+    startGithubOperatorLogin(req, res, resolveBaseUrl(req));
+  });
+
+  app.get("/api/admin/auth/github/callback", async (req, res) => {
+    try {
+      await completeGithubOperatorLogin(req, res, resolveBaseUrl(req));
+    } catch (err) {
+      res.status(502).send(errorMessage(err));
+    }
+  });
+
+  app.post("/api/admin/auth/logout", (_req, res) => {
+    clearOperatorSession(res);
+    res.json({ ok: true });
+  });
+
+  app.get("/api/admin/agent-duty", async (req, res) => {
+    if (!authorizedAdminRequest(req)) {
+      res.status(401).json({
+        ok: false,
+        error: "unauthorized",
+        configured: operatorPasswordConfigured(),
+      });
+      return;
+    }
+    try {
+      res.json({
+        ok: true,
+        configured: true,
+        ...(await loadAgentDutyState()),
+      });
+    } catch (err) {
+      res.status(502).json({ ok: false, error: errorMessage(err) });
+    }
+  });
+
+  app.post("/api/admin/agent-duty", async (req, res) => {
+    if (!authorizedAdminRequest(req)) {
+      res.status(401).json({
+        ok: false,
+        error: "unauthorized",
+        configured: operatorPasswordConfigured(),
+      });
+      return;
+    }
+    const body = (req.body ?? {}) as { agent?: unknown; onDuty?: unknown };
+    if (typeof body.agent !== "string" || typeof body.onDuty !== "boolean") {
+      res.status(400).json({ ok: false, error: "agent and onDuty are required" });
+      return;
+    }
+    try {
+      res.json({
+        ok: true,
+        configured: true,
+        ...(await setAgentDuty(body.agent, body.onDuty)),
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: errorMessage(err) });
+    }
+  });
+
+  bindTankProxyRoutes(app, defaultChatGptMcpTankPort());
 
   app.get("/healthz", (req, res) => {
     const currentBaseUrl = resolveBaseUrl(req);
@@ -669,6 +764,28 @@ function escapeHtml(value: string): string {
     .replace(/</gu, "&lt;")
     .replace(/>/gu, "&gt;")
     .replace(/"/gu, "&quot;");
+}
+
+function authorizedAdminRequest(req: Request): boolean {
+  if (getOperatorSession(req)) return true;
+  const expected = operatorPassword();
+  if (!expected) return false;
+  const actual = bearerToken(req.headers.authorization);
+  if (!actual) return false;
+  return safeStringEqual(actual, expected);
+}
+
+function bearerToken(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
+  return match?.[1];
+}
+
+function safeStringEqual(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length) return false;
+  return timingSafeEqual(actualBytes, expectedBytes);
 }
 
 function errorMessage(err: unknown): string {

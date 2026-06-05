@@ -2143,6 +2143,40 @@ function buildOriginalLikeChatGptTankWidgetHtml(assetDomain = "/assets"): string
     text-transform: uppercase;
   }
   .creature[data-state="idle"] { animation: sway var(--sway-dur, 4s) ease-in-out infinite; animation-delay: var(--sway-delay, 0s); }
+  .creature.come-out,
+  .creature.go-home {
+    opacity: 0;
+  }
+  .creature.come-out {
+    animation: creature-come-out 0.68s cubic-bezier(0.11, 0.96, 0.2, 1) 1 both;
+  }
+  .creature.go-home {
+    animation: creature-go-home 0.62s cubic-bezier(0.6, 0, 0.45, 1) 1 both;
+  }
+  @keyframes creature-come-out {
+    0% {
+      opacity: 0;
+      transform: translateX(var(--entry-dx, -44px)) translateY(8px) scale(0.84);
+    }
+    70% {
+      opacity: 0.95;
+      transform: translateX(calc(var(--entry-dx, -44px) * 0.3)) translateY(-5px) scale(1.04);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) translateY(0) scale(1);
+    }
+  }
+  @keyframes creature-go-home {
+    0% {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+    100% {
+      opacity: 0.68;
+      transform: translateX(var(--exit-dx, 48px)) translateY(7px) scale(0.9);
+    }
+  }
   @keyframes sway {
     0%, 100% { transform: translate(0, 0); }
     25% { transform: translate(var(--sway-x, 2px), 0); }
@@ -2155,12 +2189,12 @@ function buildOriginalLikeChatGptTankWidgetHtml(assetDomain = "/assets"): string
   .creature[data-state="winner"] { filter: drop-shadow(0 0 18px rgba(243,223,122,0.95)) brightness(1.35) saturate(1.3); }
   .creature[data-state="cave"] { filter: brightness(0.45) blur(0.4px); opacity: 0.7; }
   .creature.ogre-animated[data-state="cave"] { opacity: 1; filter: brightness(0.55) saturate(0.85); }
-  .pos-pigeon { top: 4%; left: 4%; }
-  .pos-gremlin { top: 9%; right: 12%; }
-  .pos-ogre { top: 35%; left: 7%; }
+  .pos-pigeon { top: 4%; left: 4%; --entry-dx: -38px; --exit-dx: 42px; }
+  .pos-gremlin { top: 9%; right: 12%; --entry-dx: 40px; --exit-dx: 40px; }
+  .pos-ogre { top: 35%; left: 7%; --entry-dx: -28px; --exit-dx: 34px; }
+  .pos-raccoon { bottom: 8%; left: 12%; --entry-dx: -44px; --exit-dx: 44px; }
+  .pos-troll { bottom: 11%; right: 11%; --entry-dx: 34px; --exit-dx: 38px; }
   .pos-goblins { position: absolute; top: 28%; left: 50%; transform: translateX(-50%); width: min(92%, 760px); z-index: 4; }
-  .pos-raccoon { bottom: 8%; left: 12%; }
-  .pos-troll { bottom: 11%; right: 11%; }
   .goblin-pile {
     position: relative;
     z-index: 2;
@@ -2353,6 +2387,11 @@ const side = {
   ogre: $("side-ogre"),
   pigeon: $("side-pigeon")
 };
+const SIDE_CREATURE_ACTION_TOKENS = new Map();
+const HOSTED_WIDGET_SOURCE = "ui/chatgpt-hosted-widget";
+const HOSTED_WIDGET_ROUTE = "/ui/chatgpt-hosted-widget";
+let lastHostRunSession = "";
+let lastHostRunEventKey = "";
 let tankState = {
   tankUrl: "https://goblintown-mcp.vercel.app",
   hosted: true,
@@ -2744,9 +2783,120 @@ function setState(id, state) {
   if (side[key]) side[key].textContent = state;
 }
 
+function summonSideCreature(id, options = {}) {
+  options = options || {};
+  const el = $(id);
+  if (!el || options.replay) return 0;
+  const token = (SIDE_CREATURE_ACTION_TOKENS.get(id) || 0) + 1;
+  SIDE_CREATURE_ACTION_TOKENS.set(id, token);
+  const state = options.state || "active";
+  const homeState = options.homeState || "idle";
+  const homeAfterMs = typeof options.homeAfterMs === "number" ? options.homeAfterMs : 2200;
+  setState(id, state);
+  el.classList.remove("go-home", "come-out");
+  void el.offsetWidth;
+  el.classList.add("come-out");
+  if (homeAfterMs >= 0) {
+    setTimeout(() => settleSideCreature(id, homeState, token), homeAfterMs);
+  }
+  return token;
+}
+
+function settleSideCreature(id, homeState, token) {
+  const el = $(id);
+  if (!el) return;
+  const currentToken = SIDE_CREATURE_ACTION_TOKENS.get(id);
+  const expected = token || currentToken;
+  if (token && currentToken !== token) return;
+  setState(id, homeState || "idle");
+  el.classList.remove("come-out");
+  el.classList.add("go-home");
+  setTimeout(() => {
+    if (SIDE_CREATURE_ACTION_TOKENS.get(id) !== expected) return;
+    el.classList.remove("go-home");
+  }, 680);
+}
+
 function shortText(value, max) {
   const text = typeof value === "string" ? value : JSON.stringify(value || "", null, 2);
   return text.length > max ? text.slice(0, max) + "\\n..." : text;
+}
+
+function hostRunEventKey(event, index) {
+  if (!event || typeof event !== "object") return String(index);
+  const seq = typeof event.seq === "number" ? event.seq : index;
+  const kind = typeof event.kind === "string" ? event.kind : "event";
+  return String(seq) + ":" + kind;
+}
+
+function syncHostRunCreaturePhases(hostRun) {
+  const events = hostRun && Array.isArray(hostRun.events) ? hostRun.events : [];
+  if (!events.length) return;
+
+  const latestIndex = events.length - 1;
+  const latest = events[latestIndex];
+  const eventKey = hostRunEventKey(latest, latestIndex);
+  if (eventKey === lastHostRunEventKey) return;
+  lastHostRunEventKey = eventKey;
+  if (!latest || typeof latest !== "object") return;
+
+  const kind = typeof latest.kind === "string" ? latest.kind : "";
+  const verdict = latest.verdict || {};
+
+  switch (kind) {
+    case "scavenge:start":
+      summonSideCreature("c-raccoon", { state: "active", homeState: "idle" });
+      break;
+    case "scavenge:done":
+      settleSideCreature("c-raccoon", "idle");
+      break;
+    case "chaos:start":
+      summonSideCreature("c-gremlin", { state: "active", homeState: "idle" });
+      break;
+    case "chaos:done":
+      settleSideCreature("c-gremlin", "idle");
+      break;
+    case "review:start":
+      summonSideCreature("c-troll", { state: "active", homeState: "idle" });
+      break;
+    case "review:verdict": {
+      const passed = verdict?.passed === true;
+      settleSideCreature("c-troll", passed ? "pass" : "fail");
+      break;
+    }
+    case "fallback:start":
+      summonSideCreature("c-ogre", { state: "active", homeState: "cave" });
+      break;
+    case "fallback:done":
+      settleSideCreature("c-ogre", "cave");
+      break;
+    case "scribe:start":
+      summonSideCreature("c-pigeon", { state: "active", homeState: "idle" });
+      break;
+    case "scribe:done":
+      settleSideCreature("c-pigeon", "idle");
+      break;
+    case "plan:node:start":
+      summonSideCreature("c-raccoon", { state: "active", homeState: "idle" });
+      break;
+    case "plan:done":
+    case "rite:done":
+      settleSideCreature("c-raccoon", "idle");
+      settleSideCreature("c-gremlin", "idle");
+      settleSideCreature("c-troll", "idle");
+      settleSideCreature("c-ogre", "cave");
+      settleSideCreature("c-pigeon", "idle");
+      break;
+  }
+}
+
+function buildHostRunActivation(trigger) {
+  return {
+    source: HOSTED_WIDGET_SOURCE,
+    route: HOSTED_WIDGET_ROUTE,
+    trigger,
+    requested: true,
+  };
 }
 
 function bubbleFor(id, text) {
@@ -2773,6 +2923,18 @@ function renderHostRun(payload) {
   const hostRun = payload.hostRun && typeof payload.hostRun === "object" ? payload.hostRun : {};
   const kind = hostRun.kind || payload.mode || "tank";
   const task = hostRun.task || payload.task || "";
+  const runSession = String(
+    payload.runId ||
+    payload.lootId ||
+    hostRun.runId ||
+    hostRun.lootId ||
+    String(kind) + ":" + String(task)
+  );
+  const newSession = runSession !== lastHostRunSession;
+  if (newSession) {
+    lastHostRunSession = runSession;
+    lastHostRunEventKey = "";
+  }
   statusEl.textContent = task ? "task: " + task : "Tank ready inside ChatGPT.";
   if (kind === "rite") {
     const prompts = hostRun.prompts && typeof hostRun.prompts === "object" ? hostRun.prompts : {};
@@ -2793,11 +2955,13 @@ function renderHostRun(payload) {
       "Ogre: fallback if needed",
       "Pigeon: scribe note"
     ].join("\\n");
-    setState("c-raccoon", "active");
-    setState("c-gremlin", "active");
-    setState("c-troll", "active");
-    setState("c-ogre", "active");
-    setState("c-pigeon", "active");
+    if (newSession) {
+      summonSideCreature("c-raccoon", { state: "active", homeState: "idle", homeAfterMs: 4200 });
+      summonSideCreature("c-gremlin", { state: "active", homeState: "idle", homeAfterMs: 4200 });
+      summonSideCreature("c-troll", { state: "active", homeState: "idle", homeAfterMs: 4200 });
+      summonSideCreature("c-ogre", { state: "active", homeState: "cave", homeAfterMs: 4200 });
+      summonSideCreature("c-pigeon", { state: "active", homeState: "idle", homeAfterMs: 4200 });
+    }
     setRaccoonMode("wake");
     setTimeout(() => setRaccoonMode("scurry"), 1500);
     wakeGoblins("argue");
@@ -2806,18 +2970,32 @@ function renderHostRun(payload) {
     bubbleFor("c-gremlin", prompts.gremlinSystemPrompt || "attack edge cases");
     bubbleFor("c-troll", prompts.trollSystemPrompt || "judge candidates");
     bubbleFor("c-ogre", (hostRun.instructions || []).slice(-2).join("\\n") || "fallback if all fail");
+    syncHostRunCreaturePhases(hostRun);
     return;
   }
   if (kind === "plan") {
     renderGoblinSlots(3, ["planner", "node", "synth"]);
     wakeGoblins("defend");
+    if (newSession) {
+      summonSideCreature("c-raccoon", { state: "active", homeState: "idle", homeAfterMs: 3900 });
+      summonSideCreature("c-troll", { state: "active", homeState: "idle", homeAfterMs: 3900 });
+      summonSideCreature("c-ogre", { state: "active", homeState: "cave", homeAfterMs: 3900 });
+    }
     setState("c-raccoon", "active");
     setState("c-gremlin", "idle");
     setState("c-troll", "active");
     setState("c-ogre", "active");
     dagText.textContent = shortText(hostRun.plannerPrompt || task || "planner ready", 900);
     bubbleFor("c-ogre", "planner DAG");
+    syncHostRunCreaturePhases(hostRun);
     return;
+  }
+  if (newSession && Object.keys(goblinByIndex).length) {
+    settleSideCreature("c-raccoon", "idle");
+    settleSideCreature("c-gremlin", "idle");
+    settleSideCreature("c-troll", "idle");
+    settleSideCreature("c-ogre", "cave");
+    settleSideCreature("c-pigeon", "idle");
   }
   if (!Object.keys(goblinByIndex).length) renderGoblinSlots(3, ["goblin", "goblin", "goblin"]);
 }
@@ -2881,7 +3059,8 @@ $("ask-rite").addEventListener("click", async () => {
   try {
     const result = await bridge.callTool("goblintown_rite", {
       task: "Run a Goblintown rite for the current task using the real board loop.",
-      packSize: 5
+      packSize: 5,
+      activation: buildHostRunActivation("ask-rite-click"),
     });
     renderHostRun(payloadFrom(result));
   } catch (err) {
@@ -3586,6 +3765,7 @@ document.getElementById("ask-rite").addEventListener("click", async () => {
   try {
     const result = await bridge.callTool("goblintown_rite", {
       task: "Run a Goblintown rite for the current task using the real board loop.",
+      activation: buildHostRunActivation("hosted-ask-rite-click"),
     });
     tankState = mergeTankState(
       tankState,
