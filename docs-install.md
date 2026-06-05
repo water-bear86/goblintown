@@ -40,8 +40,9 @@ goblintown chatgpt serve --port 8787 --public-base-url https://your-tunnel.examp
 
 Local mode uses:
 
-- Local port: `GOBLINTOWN_CHATGPT_PORT` or `PORT` (default `8787`)
-- MCP port: `GOBLINTOWN_MCP_TANK_PORT` (default `7777`)
+- Local port: `GOBLINTOWN_CHATGPT_PUBLIC_BASE_URL`, `GOBLINTOWN_CHATGPT_HOST`, `GOBLINTOWN_CHATGPT_PORT` (default `8787`)
+- MCP bridge port: `GOBLINTOWN_MCP_TANK_PORT` (default `7777`)
+- MCP startup timeout override: `GOBLINTOWN_MCP_TANK_START_TIMEOUT_MS`
 - Allowed ChatGPT hostnames: `GOBLINTOWN_CHATGPT_ALLOWED_HOSTS`
 
 In local mode, paste `https://your-tunnel.example/mcp` into ChatGPT Developer Mode.
@@ -118,6 +119,21 @@ npm run verify:chatgpt -- --mcp-url http://127.0.0.1:8787/mcp
   - `source: "ui/chatgpt-hosted-widget"`
   - `route: "/ui/chatgpt-hosted-widget"`
   - `requested: true`
+
+### One-command smoke check
+
+```bash
+cd /Users/angus/goblintown/repo/goblintown/chatgptapp
+npm run verify:chatgpt -- --mcp-url https://goblintown-mcp.vercel.app/mcp
+npm run verify:vercel
+npm run verify:smoke
+```
+
+Expected checks:
+
+- no uncaught startup failures from `node dist/cli.js chatgpt serve`
+- MCP route is reachable and advertises the expected tool list
+- hosted verification returns success and writes a `goblintown-capabilities` payload
 
 ## Required scope and ownership reminders
 
