@@ -29,7 +29,7 @@ Current distribution lines:
 | --- | --- | --- | --- |
 | Goblintown Codex Plugin | 1.0 | Current | Codex composer plugin, skill, local stdio MCP, AI-autopilot Tank |
 | Goblintown Desktop | Beta 0.1 | Shipped | Desktop shell for macOS DMG, Windows installer, Linux AppImage |
-| Goblintown ChatGPT App | 1.0 | Dev preview | ChatGPT Apps SDK MCP adapter, Streamable HTTP endpoint, Tank widget resource |
+| Goblintown ChatGPT App | 1.0 | Submission-ready hosted surface | ChatGPT Apps SDK MCP adapter, Streamable HTTP endpoint, Tank widget resource |
 
 Next front-end adapters should get their own lane and name:
 
@@ -142,11 +142,12 @@ only when you want the local Tank run UI or explicit local/provider spend. It
 runs on the user's machine; imported chats and Hoard artifacts stay local
 unless you choose to move them.
 
-**ChatGPT App 1.0.** The ChatGPT adapter is a dev preview for ChatGPT Developer
-Mode. It serves a Streamable HTTP MCP endpoint at `/mcp`, advertises the same
-board-loop shape as Codex Plugin 1.0, and includes a Tank widget resource at
-`ui://goblintown/tank-v2.html`. Its default board path does not require local
-OpenAI API keys: ChatGPT is the host model surface for OpenAI-model work.
+**ChatGPT App 1.0.** The ChatGPT adapter is a submission-ready hosted surface
+and a local Developer Mode adapter. It serves a Streamable HTTP MCP endpoint at
+`/mcp`, advertises the same board-loop shape as Codex Plugin 1.0, and includes
+a Tank widget resource at `ui://goblintown/tank-v2.html`. Its default board path
+does not require local OpenAI API keys: ChatGPT is the host model surface for
+OpenAI-model work.
 
 ```bash
 npx -y goblintown@latest chatgpt install
@@ -179,6 +180,7 @@ local provider spend, and the local Tank stay on the local adapter path.
 Runbook and readiness artifacts are documented in:
 
 - [Goblintown ChatGPT app runbook](docs/chatgpt-app-store-runbook.md)
+- [Goblintown ChatGPT app store release notes](docs/chatgpt-app-store-release-notes.md)
 - `chatgpt-app-submission.json`
 - `npm run -s verify:chatgpt`, `npm run -s verify:vercel`, `npm run -s verify:smoke`
 

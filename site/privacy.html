@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Goblintown Privacy Policy</title>
-<meta name="description" content="Privacy policy for Goblintown, including the website, Codex Plugin, ChatGPT App dev preview, CLI, and local Tank." />
+<meta name="description" content="Privacy policy for Goblintown, including the website, Codex Plugin, ChatGPT App, CLI, and local Tank." />
 <meta name="theme-color" content="#0d1410" />
 <link rel="icon" href="assets/mayor-icon.png" />
 <style>
@@ -61,7 +61,7 @@
     <p class="meta">Effective date: June 1, 2026</p>
     <p>
       Goblintown is a local-first orchestration tool. This policy covers the
-      website, Codex Plugin, ChatGPT App dev preview, CLI, local Tank, and
+      website, Codex Plugin, ChatGPT App, CLI, local Tank, and
       related package docs.
     </p>
   </section>
@@ -93,8 +93,9 @@
     <h2>Where Data Goes</h2>
     <ul>
       <li>Local-first state stays on your machine, usually under a project <code>.goblintown</code> folder or the Codex-local Goblintown folder.</li>
-      <li>When you use the ChatGPT App dev preview, ChatGPT and OpenAI receive the content needed to call the app tools.</li>
+      <li>When you use the hosted ChatGPT App, ChatGPT and OpenAI receive the content needed to call the app tools and execute the returned host-run packets.</li>
       <li>When you use Codex, the Codex host receives the content needed to call the plugin tools.</li>
+      <li>The hosted ChatGPT App does not require <code>OPENAI_API_KEY</code> and does not intentionally collect provider secret values.</li>
       <li>When you run local-provider execution, configured model providers may receive prompts, context, and tool outputs needed for that run.</li>
       <li>When you provide URLs or enable tools that fetch remote content, those remote services may receive normal request metadata.</li>
       <li>Private local files are not uploaded by Goblintown unless you ask a tool to read, scan, import, summarize, or send them to a provider or host.</li>

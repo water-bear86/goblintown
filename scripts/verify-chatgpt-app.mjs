@@ -77,12 +77,28 @@ async function verifyHttpSurface() {
   assert.equal(json.error?.message, "Method not allowed. Use POST /mcp.");
 
   const dashboard = await requestText(new URL("/dashboard.html", publicBaseUrl));
-  assert.equal(dashboard.status, 200, "Dashboard placeholder should be served");
-  assert.match(dashboard.body, /Job DAG Composer|User dashboard/);
+  assert.equal(dashboard.status, 200, "Launch dashboard should be served");
+  assert.match(dashboard.body, /Launch dashboard/);
+  assert.match(dashboard.body, /Run History And Artifacts/);
 
   const admin = await requestText(new URL("/admin.html", publicBaseUrl));
-  assert.equal(admin.status, 200, "Admin placeholder should be served");
+  assert.equal(admin.status, 200, "Operator admin should be served");
   assert.match(admin.body, /Operator admin/);
+  assert.match(admin.body, /Control readiness/);
+
+  const readiness = await requestJson(new URL("/api/submission/readiness", publicBaseUrl));
+  assert.equal(readiness.ok, true, "Submission readiness should be ok");
+  assert.equal(readiness.currentMcpUrl, mcpUrl, "Submission readiness should report the current MCP URL");
+  assert.equal(readiness.widgetUri, WIDGET_URI, "Submission readiness should report the widget URI");
+  assert.equal(readiness.tokenPolicy?.openAiApiKeyRequired, false, "Hosted app should not require an OpenAI API key");
+  assert.ok(
+    readiness.controls?.some((item) => item.key === "provider_model_routing" && item.state),
+    "Submission readiness should include provider/model routing controls",
+  );
+  assert.ok(
+    readiness.evidence?.some((item) => item.key === "chatgpt_hosted"),
+    "Submission readiness should include hosted verification evidence",
+  );
   return health;
 }
 

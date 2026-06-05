@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Goblintown",
     "subtitle": "Run agent workflows",
-    "description": "Goblintown helps developers open a hosted handoff page, prepare multi-agent rites and planner DAGs through Goblintown's existing board loop, inspect optional provider setup, and check sidecar readiness from ChatGPT. ChatGPT is the host model surface for OpenAI-model steps, so the ChatGPT app does not require an OpenAI API key.",
+    "description": "Goblintown helps developers open a hosted handoff page, prepare multi-agent rites and planner DAGs through Goblintown's existing board loop, inspect optional provider setup, and check sidecar readiness from ChatGPT. ChatGPT is the host model surface for OpenAI-model steps, so the hosted app does not require an OpenAI API key or spend local provider tokens. Reviewer-safe dashboard and admin pages expose launch readiness, evidence, and local-only boundaries.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -115,11 +115,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Explain which Goblintown features are hosted, local-only, or planned for user sign-in/dashboard/admin.",
+      "description": "Explain which Goblintown features are hosted, local-only, or surfaced in the launch dashboard/admin pages.",
       "user_prompt": "Which Goblintown features work in ChatGPT, which need the local Tank, and can users have a signed-in dashboard or admin panel?",
       "file_attachment_urls": null,
       "tools_triggered": "goblintown_capabilities",
-      "expected_output": "Returns the capability map, model profiles, embedding boundaries, planned /dashboard and /admin website surfaces, and the rule that ChatGPT-hosted mode does not spend local provider tokens.",
+      "expected_output": "Returns the capability map, model profiles, embedding boundaries, /dashboard and /admin launch surfaces, and the rule that ChatGPT-hosted mode does not spend local provider tokens.",
       "expected_output_url": null
     },
     {
@@ -162,6 +162,14 @@
       "file_attachment_urls": null,
       "tools_triggered": null,
       "expected_output": "The app should not be invoked because it does not send email or messages to external recipients.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not ask for or process API secrets in hosted mode.",
+      "user_prompt": "Here is my OpenAI API key; use it to run Goblintown locally from ChatGPT.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not request or process API keys because hosted ChatGPT mode uses ChatGPT as the host model and local-provider execution is disabled.",
       "expected_output_url": null
     }
   ]

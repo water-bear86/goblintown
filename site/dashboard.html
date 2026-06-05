@@ -3,76 +3,51 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Goblintown DAG Composer</title>
+  <title>Goblintown Launch Dashboard</title>
   <style>
     :root {
       color-scheme: dark;
       --bg: #0d1410;
       --panel: #101912;
-      --panel-strong: #162116;
+      --panel-strong: #172316;
       --field: #0a100b;
       --ink: #d8efb6;
       --muted: #8aa37a;
       --line: #27351f;
-      --line-hot: #6fa944;
       --accent: #9bdc5a;
       --accent-strong: #c2f37a;
       --warn: #f0cc69;
       --bad: #f19772;
       --ok: #7fd99a;
-      --shadow: rgba(0, 0, 0, .34);
     }
 
     * { box-sizing: border-box; }
     html, body { min-height: 100%; margin: 0; }
     body {
       background:
-        linear-gradient(135deg, rgba(155, 220, 90, .06), transparent 30%),
-        radial-gradient(circle at 70% 10%, rgba(240, 204, 105, .08), transparent 24rem),
+        linear-gradient(135deg, rgba(155, 220, 90, .06), transparent 34%),
+        linear-gradient(180deg, rgba(240, 204, 105, .04), transparent 22rem),
         var(--bg);
       color: var(--ink);
       font: 14px/1.45 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
     }
 
-    button, input, select, textarea {
-      font: inherit;
-    }
-
+    a { color: var(--accent-strong); text-decoration: none; }
+    a:hover { text-decoration: underline; }
     button {
+      min-height: 2.35rem;
       border: 1px solid var(--line);
       background: var(--panel-strong);
       color: var(--ink);
-      min-height: 2.35rem;
       padding: .55rem .75rem;
+      font: inherit;
       cursor: pointer;
-      transition: border-color .14s ease, background .14s ease, transform .1s ease;
     }
-
-    button:hover {
-      border-color: var(--line-hot);
-      background: #1a2b17;
-    }
-
-    button:active { transform: translateY(1px); }
-    button.primary {
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #101910;
-      font-weight: 700;
-    }
-
-    button.danger {
-      border-color: rgba(241, 151, 114, .55);
-      color: var(--bad);
-    }
-
-    button.ghost {
-      background: transparent;
-    }
-
-    button:disabled {
-      cursor: not-allowed;
-      opacity: .45;
+    button:hover { border-color: var(--accent); }
+    code {
+      background: var(--field);
+      color: var(--accent-strong);
+      padding: 2px 5px;
     }
 
     .app {
@@ -80,46 +55,35 @@
       display: grid;
       grid-template-rows: auto 1fr;
     }
-
     header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
       display: flex;
       align-items: center;
       gap: 1rem;
       padding: 1rem clamp(1rem, 3vw, 2rem);
       border-bottom: 1px solid var(--line);
-      background: rgba(13, 20, 16, .9);
+      background: rgba(13, 20, 16, .92);
       backdrop-filter: blur(14px);
-      position: sticky;
-      top: 0;
-      z-index: 10;
     }
-
-    .brand {
-      display: grid;
-      gap: .18rem;
-    }
-
-    .brand strong {
+    h1, h2, h3, p { margin: 0; }
+    h1 {
       color: var(--accent-strong);
       font-size: 1rem;
       letter-spacing: .04em;
       text-transform: uppercase;
     }
-
-    .brand span {
-      color: var(--muted);
+    h2 {
       font-size: .82rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: .7rem;
     }
-
-    .status-strip {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: .55rem;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
+    h3 { font-size: .98rem; color: var(--ink); }
+    .subtitle { color: var(--muted); font-size: .82rem; }
+    .spacer { flex: 1; }
     .pill {
       border: 1px solid var(--line);
       background: var(--field);
@@ -127,1000 +91,228 @@
       padding: .35rem .55rem;
       white-space: nowrap;
     }
-
-    .pill.ok { border-color: rgba(127, 217, 154, .5); color: var(--ok); }
-    .pill.warn { border-color: rgba(240, 204, 105, .55); color: var(--warn); }
-    .pill.bad { border-color: rgba(241, 151, 114, .6); color: var(--bad); }
+    .pill.ready { border-color: rgba(127, 217, 154, .5); color: var(--ok); }
+    .pill.bounded { border-color: rgba(240, 204, 105, .55); color: var(--warn); }
+    .pill.local_only { border-color: rgba(241, 151, 114, .6); color: var(--bad); }
+    .pill.manual { border-color: rgba(155, 220, 90, .45); color: var(--accent); }
 
     main {
       display: grid;
-      grid-template-columns: minmax(15rem, 18rem) minmax(24rem, 1fr) minmax(17rem, 21rem);
+      grid-template-columns: minmax(18rem, 23rem) minmax(0, 1fr);
       min-height: 0;
     }
-
-    aside, section.workspace {
-      min-height: 0;
-    }
-
     aside {
       border-right: 1px solid var(--line);
-      background: rgba(16, 25, 18, .84);
-      overflow: auto;
-    }
-
-    aside.inspector {
-      border-right: 0;
-      border-left: 1px solid var(--line);
-    }
-
-    .panel {
+      background: rgba(16, 25, 18, .82);
       padding: 1rem;
-      border-bottom: 1px solid var(--line);
-    }
-
-    h1, h2, h3, p {
-      margin: 0;
-    }
-
-    h2 {
-      color: var(--ink);
-      font-size: .86rem;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      margin-bottom: .8rem;
-    }
-
-    h3 {
-      color: var(--accent-strong);
-      font-size: .92rem;
-      margin-bottom: .28rem;
-    }
-
-    .palette {
-      display: grid;
-      gap: .65rem;
-    }
-
-    .palette button {
-      width: 100%;
-      display: grid;
-      grid-template-columns: 2.15rem 1fr;
-      align-items: center;
-      gap: .65rem;
-      text-align: left;
-    }
-
-    .type-mark {
-      width: 2.15rem;
-      height: 2.15rem;
-      display: grid;
-      place-items: center;
-      border: 1px solid var(--line-hot);
-      background: #0d160e;
-      color: var(--accent-strong);
-      font-weight: 800;
-    }
-
-    .palette small, .node small, .meta {
-      color: var(--muted);
-      font-size: .76rem;
-    }
-
-    .tools {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: .5rem;
-    }
-
-    .tools .wide {
-      grid-column: 1 / -1;
-    }
-
-    .workspace {
-      position: relative;
       overflow: auto;
-      background-image:
-        linear-gradient(rgba(216, 239, 182, .045) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(216, 239, 182, .045) 1px, transparent 1px);
-      background-size: 32px 32px;
     }
-
-    .canvas {
-      position: relative;
-      width: max(100%, 920px);
-      height: max(100%, 660px);
-      min-height: 660px;
+    .workspace {
+      padding: clamp(1rem, 3vw, 2rem);
+      display: grid;
+      gap: 1rem;
+      align-content: start;
     }
-
-    svg.edges {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-      overflow: visible;
-    }
-
-    .edge-line {
-      stroke: rgba(155, 220, 90, .72);
-      stroke-width: 2.5;
-      fill: none;
-      filter: drop-shadow(0 3px 5px var(--shadow));
-    }
-
-    .edge-line.invalid {
-      stroke: rgba(241, 151, 114, .85);
-      stroke-dasharray: 8 7;
-    }
-
-    .node {
-      position: absolute;
-      width: 13.5rem;
-      min-height: 6.8rem;
+    .panel {
       border: 1px solid var(--line);
-      background: linear-gradient(180deg, #162116, #101810);
-      box-shadow: 0 16px 28px var(--shadow);
-      padding: .8rem;
+      background: rgba(16, 25, 18, .78);
+      padding: 1rem;
+    }
+    .stack { display: grid; gap: .7rem; }
+    .grid {
       display: grid;
-      gap: .6rem;
-      cursor: grab;
-      user-select: none;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: .8rem;
     }
-
-    .node.selected {
-      border-color: var(--accent);
-      outline: 2px solid rgba(155, 220, 90, .18);
-    }
-
-    .node.connecting {
-      border-color: var(--warn);
-      outline: 2px solid rgba(240, 204, 105, .22);
-    }
-
-    .node header {
-      position: static;
-      padding: 0;
-      border: 0;
-      background: transparent;
+    .card {
+      border: 1px solid var(--line);
+      background: rgba(10, 16, 11, .72);
+      padding: .9rem;
       display: grid;
-      grid-template-columns: 2rem 1fr;
-      gap: .55rem;
+      gap: .45rem;
+      min-height: 8rem;
+    }
+    .meta { color: var(--muted); font-size: .78rem; }
+    .row {
+      display: grid;
+      grid-template-columns: minmax(7rem, 12rem) 1fr auto;
+      gap: .8rem;
       align-items: start;
+      border-top: 1px solid var(--line);
+      padding: .75rem 0;
     }
-
-    .node .type-mark {
-      width: 2rem;
-      height: 2rem;
-      font-size: .82rem;
-    }
-
-    .node strong {
-      color: var(--ink);
-      display: block;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .node footer {
-      display: flex;
-      flex-wrap: wrap;
-      gap: .35rem;
-    }
-
-    .tag {
-      border: 1px solid var(--line);
-      background: var(--field);
-      color: var(--muted);
-      padding: .18rem .35rem;
-      font-size: .7rem;
-    }
-
-    .field {
-      display: grid;
-      gap: .35rem;
-      margin-bottom: .8rem;
-    }
-
-    label {
-      color: var(--muted);
-      font-size: .76rem;
-      text-transform: uppercase;
-      letter-spacing: .07em;
-    }
-
-    input, select, textarea {
+    .row:first-child { border-top: 0; padding-top: 0; }
+    .copybox {
       width: 100%;
+      min-height: 5.5rem;
       border: 1px solid var(--line);
       background: var(--field);
       color: var(--ink);
-      padding: .62rem .68rem;
-      min-height: 2.35rem;
-    }
-
-    textarea {
-      min-height: 6rem;
+      padding: .7rem;
       resize: vertical;
+      font: inherit;
     }
+    ul { margin: 0; padding-left: 1.2rem; color: var(--muted); }
+    li { margin: .3rem 0; }
 
-    input:focus, select:focus, textarea:focus {
-      outline: 2px solid rgba(155, 220, 90, .22);
-      border-color: var(--accent);
-    }
-
-    .edge-list, .validation-list, .saved-list {
-      display: grid;
-      gap: .5rem;
-    }
-
-    .edge-row, .saved-row, .validation-item {
-      border: 1px solid var(--line);
-      background: var(--field);
-      padding: .6rem;
-    }
-
-    .edge-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: .5rem;
-      align-items: center;
-    }
-
-    .edge-row button, .saved-row button {
-      min-height: 1.8rem;
-      padding: .25rem .45rem;
-    }
-
-    .saved-row {
-      display: grid;
-      gap: .45rem;
-    }
-
-    .saved-row .saved-actions {
-      display: flex;
-      gap: .45rem;
-    }
-
-    .validation-item.ok { border-color: rgba(127, 217, 154, .42); color: var(--ok); }
-    .validation-item.warn { border-color: rgba(240, 204, 105, .45); color: var(--warn); }
-    .validation-item.bad { border-color: rgba(241, 151, 114, .52); color: var(--bad); }
-
-    .empty {
-      color: var(--muted);
-      border: 1px dashed var(--line);
-      padding: .8rem;
-      background: rgba(10, 16, 11, .62);
-    }
-
-    @media (max-width: 1080px) {
-      main {
-        grid-template-columns: 15rem minmax(24rem, 1fr);
-      }
-
-      aside.inspector {
-        grid-column: 1 / -1;
-        border-left: 0;
-        border-top: 1px solid var(--line);
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-    }
-
-    @media (max-width: 760px) {
-      header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .status-strip {
-        width: 100%;
-        margin-left: 0;
-        justify-content: flex-start;
-      }
-
-      main {
-        grid-template-columns: 1fr;
-      }
-
-      aside, aside.inspector {
-        border: 0;
-        border-bottom: 1px solid var(--line);
-        display: block;
-      }
-
-      .tools {
-        grid-template-columns: 1fr;
-      }
-
-      .canvas {
-        width: 860px;
-        min-height: 620px;
-      }
+    @media (max-width: 920px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      .grid { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .spacer { display: none; }
     }
   </style>
 </head>
 <body>
   <div class="app">
     <header>
-      <div class="brand">
-        <strong>Job DAG Composer</strong>
-        <span>Create, validate, and save execution graphs for hosted runs.</span>
+      <div>
+        <h1>Launch dashboard</h1>
+        <p class="subtitle">Hosted ChatGPT app submission surface</p>
       </div>
-      <div class="status-strip">
-        <span class="pill" id="node-count">0 nodes</span>
-        <span class="pill" id="edge-count">0 edges</span>
-        <span class="pill warn" id="save-state">Unsaved</span>
-        <span class="pill bad" id="validation-state">Invalid</span>
-      </div>
+      <div class="spacer"></div>
+      <span class="pill manual" id="mode">Loading</span>
+      <a href="/admin.html">Admin</a>
+      <a href="/privacy.html">Privacy</a>
+      <a href="/terms.html">Terms</a>
     </header>
 
     <main>
-      <aside>
-        <div class="panel">
-          <h2>Node Types</h2>
-          <div class="palette" id="palette"></div>
-        </div>
+      <aside class="stack">
+        <section class="panel stack">
+          <h2>Endpoint</h2>
+          <p class="meta">Universal MCP URL</p>
+          <code id="mcp-url">loading</code>
+          <p class="meta">Widget</p>
+          <code id="widget-uri">loading</code>
+          <button type="button" data-copy="#mcp-url">Copy MCP URL</button>
+        </section>
 
-        <div class="panel">
-          <h2>Graph Actions</h2>
-          <div class="tools">
-            <button id="connect-mode">Connect</button>
-            <button id="auto-layout">Layout</button>
-            <button class="wide primary" id="save-graph">Save Valid DAG</button>
-            <button class="wide ghost" id="load-sample">Load Sample</button>
-            <button class="wide danger" id="clear-graph">Clear</button>
+        <section class="panel stack">
+          <h2>Token Policy</h2>
+          <p id="token-policy">Loading</p>
+          <p class="meta" id="local-provider">Loading</p>
+        </section>
+
+        <section class="panel stack">
+          <h2>Reviewer Prompts</h2>
+          <textarea class="copybox" id="prompt-plan" readonly>Plan a Goblintown DAG for shipping this MCP adapter, with no more than six nodes.</textarea>
+          <button type="button" data-copy="#prompt-plan">Copy Plan Prompt</button>
+          <textarea class="copybox" id="prompt-doctor" readonly>Run the Goblintown doctor and show me whether setup is ready.</textarea>
+          <button type="button" data-copy="#prompt-doctor">Copy Doctor Prompt</button>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <section class="panel">
+          <h2>Surfaces</h2>
+          <div class="grid" id="surfaces"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Run History And Artifacts</h2>
+          <div class="grid">
+            <article class="card">
+              <span class="pill ready">Ready</span>
+              <h3>Reviewer smoke plan</h3>
+              <p class="meta">Use <code>goblintown_plan</code> to return a ChatGPT-hosted planner packet with deterministic DAG instructions.</p>
+            </article>
+            <article class="card">
+              <span class="pill ready">Ready</span>
+              <h3>Doctor readiness artifact</h3>
+              <p class="meta">Use <code>goblintown_doctor</code> to inspect setup without exposing provider secret values.</p>
+            </article>
+            <article class="card">
+              <span class="pill bounded">Bounded</span>
+              <h3>Persistent local Hoard</h3>
+              <p class="meta">Durable run logs, imported chats, embeddings, and reruns remain on the local Tank or CLI path.</p>
+            </article>
           </div>
-        </div>
+        </section>
 
-        <div class="panel">
-          <h2>Saved DAGs</h2>
-          <div class="saved-list" id="saved-list"></div>
-        </div>
-      </aside>
+        <section class="panel">
+          <h2>Control Readiness</h2>
+          <div id="controls"></div>
+        </section>
 
-      <section class="workspace" aria-label="DAG composition canvas">
-        <div class="canvas" id="canvas">
-          <svg class="edges" id="edges" aria-hidden="true"></svg>
-          <div id="nodes"></div>
-        </div>
+        <section class="panel">
+          <h2>Submission Evidence</h2>
+          <div id="evidence"></div>
+        </section>
+
+        <section class="panel stack">
+          <h2>Boundaries</h2>
+          <ul id="boundaries"></ul>
+        </section>
       </section>
-
-      <aside class="inspector">
-        <div class="panel">
-          <h2>Config</h2>
-          <div id="inspector-empty" class="empty">Select a node to edit its name, type, prompt, and retry policy.</div>
-          <form id="inspector-form" hidden>
-            <div class="field">
-              <label for="node-name">Name</label>
-              <input id="node-name" autocomplete="off" maxlength="48" />
-            </div>
-            <div class="field">
-              <label for="node-type">Type</label>
-              <select id="node-type"></select>
-            </div>
-            <div class="field">
-              <label for="node-prompt">Instruction</label>
-              <textarea id="node-prompt" maxlength="420"></textarea>
-            </div>
-            <div class="field">
-              <label for="node-retries">Retries</label>
-              <input id="node-retries" type="number" min="0" max="5" />
-            </div>
-            <div class="tools">
-              <button type="button" id="duplicate-node">Duplicate</button>
-              <button type="button" class="danger" id="delete-node">Delete</button>
-            </div>
-          </form>
-        </div>
-
-        <div class="panel">
-          <h2>Edges</h2>
-          <div class="edge-list" id="edge-list"></div>
-        </div>
-
-        <div class="panel">
-          <h2>Validation</h2>
-          <div class="validation-list" id="validation-list"></div>
-        </div>
-      </aside>
     </main>
   </div>
 
   <script>
-    const nodeTypes = [
-      { type: "input", label: "Input", mark: "IN", detail: "Start payload and constraints" },
-      { type: "planner", label: "Planner", mark: "PL", detail: "Break work into ordered steps" },
-      { type: "worker", label: "Worker", mark: "WK", detail: "Execute a scoped task" },
-      { type: "reviewer", label: "Reviewer", mark: "RV", detail: "Check outputs and risks" },
-      { type: "artifact", label: "Artifact", mark: "AR", detail: "Persist final files or notes" },
-    ];
+    const stateClass = (state) => ["ready", "bounded", "local_only", "manual"].includes(state) ? state : "manual";
 
-    const sampleGraph = {
-      nodes: [
-        { id: "n-input", type: "input", name: "Request Intake", prompt: "Normalize the user request into requirements and constraints.", retries: 0, x: 80, y: 250 },
-        { id: "n-plan", type: "planner", name: "Plan Builder", prompt: "Create a dependency-aware execution plan.", retries: 1, x: 310, y: 160 },
-        { id: "n-build", type: "worker", name: "Implementation", prompt: "Apply changes and capture evidence.", retries: 2, x: 540, y: 250 },
-        { id: "n-review", type: "reviewer", name: "Quality Gate", prompt: "Validate acceptance criteria and flag gaps.", retries: 1, x: 770, y: 160 },
-        { id: "n-artifact", type: "artifact", name: "Run Artifact", prompt: "Save run summary, links, and output payload.", retries: 0, x: 770, y: 380 },
-      ],
-      edges: [
-        { from: "n-input", to: "n-plan" },
-        { from: "n-plan", to: "n-build" },
-        { from: "n-build", to: "n-review" },
-        { from: "n-review", to: "n-artifact" },
-      ],
-    };
+    loadReadiness();
 
-    const storageKey = "goblintown.dashboard.savedDags";
-    const draftKey = "goblintown.dashboard.draftDag";
-    const state = {
-      nodes: [],
-      edges: [],
-      selectedId: null,
-      connectMode: false,
-      connectFrom: null,
-      dirty: false,
-    };
+    document.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-copy]");
+      if (!button) return;
+      const node = document.querySelector(button.dataset.copy);
+      const value = node.value || node.textContent || "";
+      await navigator.clipboard.writeText(value.trim()).catch(() => {});
+      const original = button.textContent;
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = original; }, 900);
+    });
 
-    const el = {
-      palette: document.querySelector("#palette"),
-      canvas: document.querySelector("#canvas"),
-      nodes: document.querySelector("#nodes"),
-      edges: document.querySelector("#edges"),
-      nodeCount: document.querySelector("#node-count"),
-      edgeCount: document.querySelector("#edge-count"),
-      saveState: document.querySelector("#save-state"),
-      validationState: document.querySelector("#validation-state"),
-      connectMode: document.querySelector("#connect-mode"),
-      autoLayout: document.querySelector("#auto-layout"),
-      saveGraph: document.querySelector("#save-graph"),
-      loadSample: document.querySelector("#load-sample"),
-      clearGraph: document.querySelector("#clear-graph"),
-      savedList: document.querySelector("#saved-list"),
-      inspectorEmpty: document.querySelector("#inspector-empty"),
-      inspectorForm: document.querySelector("#inspector-form"),
-      nodeName: document.querySelector("#node-name"),
-      nodeType: document.querySelector("#node-type"),
-      nodePrompt: document.querySelector("#node-prompt"),
-      nodeRetries: document.querySelector("#node-retries"),
-      duplicateNode: document.querySelector("#duplicate-node"),
-      deleteNode: document.querySelector("#delete-node"),
-      edgeList: document.querySelector("#edge-list"),
-      validationList: document.querySelector("#validation-list"),
-    };
-
-    function typeMeta(type) {
-      return nodeTypes.find((item) => item.type === type) || nodeTypes[0];
+    async function loadReadiness() {
+      const response = await fetch("/api/dashboard/readiness", { credentials: "same-origin" });
+      const body = await response.json();
+      document.getElementById("mode").textContent = body.hosted ? "Hosted" : "Local";
+      document.getElementById("mode").className = body.hosted ? "pill ready" : "pill bounded";
+      document.getElementById("mcp-url").textContent = body.universalMcpUrl || body.currentMcpUrl;
+      document.getElementById("widget-uri").textContent = body.widgetUri;
+      document.getElementById("token-policy").textContent = body.tokenPolicy.openAiApiKeyRequired
+        ? "OpenAI API key required"
+        : "OpenAI API key not required";
+      document.getElementById("local-provider").textContent = body.tokenPolicy.localProviderSpend;
+      renderCards("surfaces", body.reviewerSurfaces || []);
+      renderRows("controls", body.controls || []);
+      renderRows("evidence", body.evidence || []);
+      document.getElementById("boundaries").innerHTML = (body.boundaries || [])
+        .map((entry) => "<li>" + escapeHtml(entry) + "</li>")
+        .join("");
     }
 
-    function nextId(prefix = "n") {
-      return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    function renderCards(id, items) {
+      document.getElementById(id).innerHTML = items.map((item) => `
+        <article class="card">
+          <span class="pill ${stateClass(item.state)}">${escapeHtml(item.state)}</span>
+          <h3>${escapeHtml(item.label)}</h3>
+          <p class="meta"><code>${escapeHtml(item.path || item.key || "")}</code></p>
+          <p class="meta">${escapeHtml(item.detail)}</p>
+        </article>
+      `).join("");
     }
 
-    function markDirty(value = true) {
-      state.dirty = value;
-      if (value) {
-        localStorage.setItem(draftKey, JSON.stringify(exportGraph()));
-      }
-    }
-
-    function exportGraph() {
-      return {
-        nodes: state.nodes.map((node) => ({ ...node })),
-        edges: state.edges.map((edge) => ({ ...edge })),
-      };
-    }
-
-    function importGraph(graph) {
-      state.nodes = Array.isArray(graph.nodes) ? graph.nodes.map((node) => ({ ...node })) : [];
-      state.edges = Array.isArray(graph.edges) ? graph.edges.map((edge) => ({ ...edge })) : [];
-      state.selectedId = state.nodes[0]?.id || null;
-      state.connectMode = false;
-      state.connectFrom = null;
-      markDirty(true);
-      render();
-    }
-
-    function createNode(type, x, y) {
-      const meta = typeMeta(type);
-      const node = {
-        id: nextId(),
-        type,
-        name: `${meta.label} ${state.nodes.filter((item) => item.type === type).length + 1}`,
-        prompt: meta.detail,
-        retries: type === "worker" ? 2 : 1,
-        x,
-        y,
-      };
-      state.nodes.push(node);
-      state.selectedId = node.id;
-      markDirty();
-      render();
-    }
-
-    function updateSelected(patch) {
-      const node = state.nodes.find((item) => item.id === state.selectedId);
-      if (!node) return;
-      Object.assign(node, patch);
-      markDirty();
-      render();
-    }
-
-    function deleteNode(id) {
-      state.nodes = state.nodes.filter((node) => node.id !== id);
-      state.edges = state.edges.filter((edge) => edge.from !== id && edge.to !== id);
-      if (state.selectedId === id) state.selectedId = state.nodes[0]?.id || null;
-      if (state.connectFrom === id) state.connectFrom = null;
-      markDirty();
-      render();
-    }
-
-    function addEdge(from, to) {
-      if (from === to) return;
-      if (state.edges.some((edge) => edge.from === from && edge.to === to)) return;
-      state.edges.push({ from, to });
-      markDirty();
-      render();
-    }
-
-    function removeEdge(index) {
-      state.edges.splice(index, 1);
-      markDirty();
-      render();
-    }
-
-    function validateGraph() {
-      const messages = [];
-      const ids = new Set(state.nodes.map((node) => node.id));
-      const invalidEdges = state.edges.filter((edge) => !ids.has(edge.from) || !ids.has(edge.to));
-      const incoming = new Map(state.nodes.map((node) => [node.id, 0]));
-      const outgoing = new Map(state.nodes.map((node) => [node.id, 0]));
-
-      state.edges.forEach((edge) => {
-        if (ids.has(edge.to)) incoming.set(edge.to, (incoming.get(edge.to) || 0) + 1);
-        if (ids.has(edge.from)) outgoing.set(edge.from, (outgoing.get(edge.from) || 0) + 1);
-      });
-
-      if (state.nodes.length === 0) {
-        messages.push({ level: "bad", text: "Add at least one node." });
-      } else {
-        messages.push({ level: "ok", text: `${state.nodes.length} node${state.nodes.length === 1 ? "" : "s"} configured.` });
-      }
-
-      if (invalidEdges.length > 0) {
-        messages.push({ level: "bad", text: `${invalidEdges.length} edge${invalidEdges.length === 1 ? "" : "s"} point to missing nodes.` });
-      }
-
-      const emptyNames = state.nodes.filter((node) => !node.name.trim());
-      if (emptyNames.length > 0) {
-        messages.push({ level: "bad", text: `${emptyNames.length} node${emptyNames.length === 1 ? "" : "s"} need names.` });
-      }
-
-      const rootCount = [...incoming.values()].filter((count) => count === 0).length;
-      const terminalCount = [...outgoing.values()].filter((count) => count === 0).length;
-
-      if (state.nodes.length > 0 && rootCount === 0) {
-        messages.push({ level: "bad", text: "DAG needs at least one root node." });
-      } else if (state.nodes.length > 0) {
-        messages.push({ level: "ok", text: `${rootCount} root node${rootCount === 1 ? "" : "s"} ready.` });
-      }
-
-      if (state.nodes.length > 0 && terminalCount === 0) {
-        messages.push({ level: "bad", text: "DAG needs at least one terminal node." });
-      } else if (state.nodes.length > 0) {
-        messages.push({ level: "ok", text: `${terminalCount} terminal node${terminalCount === 1 ? "" : "s"} ready.` });
-      }
-
-      const cycle = findCycle();
-      if (cycle.length > 0) {
-        messages.push({ level: "bad", text: `Cycle detected: ${cycle.join(" -> ")}.` });
-      } else if (state.nodes.length > 0) {
-        messages.push({ level: "ok", text: "No cycles detected." });
-      }
-
-      const disconnected = state.nodes.filter((node) => (
-        state.nodes.length > 1 &&
-        (incoming.get(node.id) || 0) === 0 &&
-        (outgoing.get(node.id) || 0) === 0
-      ));
-      if (disconnected.length > 0) {
-        messages.push({ level: "warn", text: `${disconnected.length} isolated node${disconnected.length === 1 ? "" : "s"} will run independently.` });
-      }
-
-      return {
-        valid: messages.every((message) => message.level !== "bad"),
-        messages,
-        cycleIds: new Set(cycle),
-      };
-    }
-
-    function findCycle() {
-      const byId = new Map(state.nodes.map((node) => [node.id, node]));
-      const adjacency = new Map(state.nodes.map((node) => [node.id, []]));
-      state.edges.forEach((edge) => {
-        if (adjacency.has(edge.from) && byId.has(edge.to)) {
-          adjacency.get(edge.from).push(edge.to);
-        }
-      });
-
-      const visiting = new Set();
-      const visited = new Set();
-      const stack = [];
-
-      function visit(id) {
-        if (visiting.has(id)) {
-          const cycleStart = stack.indexOf(id);
-          return stack.slice(cycleStart).concat(id).map((nodeId) => byId.get(nodeId)?.name || nodeId);
-        }
-        if (visited.has(id)) return [];
-        visiting.add(id);
-        stack.push(id);
-        for (const next of adjacency.get(id) || []) {
-          const cycle = visit(next);
-          if (cycle.length > 0) return cycle;
-        }
-        visiting.delete(id);
-        visited.add(id);
-        stack.pop();
-        return [];
-      }
-
-      for (const node of state.nodes) {
-        const cycle = visit(node.id);
-        if (cycle.length > 0) return cycle;
-      }
-      return [];
-    }
-
-    function autoLayout() {
-      const levels = new Map();
-      const incoming = new Map(state.nodes.map((node) => [node.id, 0]));
-      const adjacency = new Map(state.nodes.map((node) => [node.id, []]));
-
-      state.edges.forEach((edge) => {
-        if (incoming.has(edge.to)) incoming.set(edge.to, incoming.get(edge.to) + 1);
-        if (adjacency.has(edge.from)) adjacency.get(edge.from).push(edge.to);
-      });
-
-      const queue = state.nodes.filter((node) => (incoming.get(node.id) || 0) === 0).map((node) => node.id);
-      queue.forEach((id) => levels.set(id, 0));
-
-      while (queue.length > 0) {
-        const id = queue.shift();
-        const level = levels.get(id) || 0;
-        for (const next of adjacency.get(id) || []) {
-          levels.set(next, Math.max(levels.get(next) || 0, level + 1));
-          incoming.set(next, incoming.get(next) - 1);
-          if (incoming.get(next) === 0) queue.push(next);
-        }
-      }
-
-      state.nodes.forEach((node, index) => {
-        const level = levels.has(node.id) ? levels.get(node.id) : index % 4;
-        const siblings = state.nodes.filter((item) => (levels.has(item.id) ? levels.get(item.id) : 0) === level);
-        const siblingIndex = siblings.findIndex((item) => item.id === node.id);
-        node.x = 80 + level * 230;
-        node.y = 90 + Math.max(siblingIndex, 0) * 150;
-      });
-
-      markDirty();
-      render();
-    }
-
-    function nodeCenter(node, side) {
-      const width = 216;
-      const height = 109;
-      return {
-        x: node.x + (side === "right" ? width : 0),
-        y: node.y + height / 2,
-      };
-    }
-
-    function renderPalette() {
-      el.palette.innerHTML = "";
-      nodeTypes.forEach((item, index) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.innerHTML = `<span class="type-mark">${item.mark}</span><span><strong>${item.label}</strong><small>${item.detail}</small></span>`;
-        button.addEventListener("click", () => createNode(item.type, 90 + index * 28, 90 + index * 42));
-        el.palette.append(button);
-      });
-
-      el.nodeType.innerHTML = "";
-      nodeTypes.forEach((item) => {
-        const option = document.createElement("option");
-        option.value = item.type;
-        option.textContent = item.label;
-        el.nodeType.append(option);
-      });
-    }
-
-    function renderNodes() {
-      el.nodes.innerHTML = "";
-      state.nodes.forEach((node) => {
-        const meta = typeMeta(node.type);
-        const item = document.createElement("article");
-        item.className = [
-          "node",
-          node.id === state.selectedId ? "selected" : "",
-          node.id === state.connectFrom ? "connecting" : "",
-        ].filter(Boolean).join(" ");
-        item.style.left = `${node.x}px`;
-        item.style.top = `${node.y}px`;
-        item.dataset.id = node.id;
-        item.innerHTML = `
-          <header>
-            <span class="type-mark">${meta.mark}</span>
-            <span>
-              <strong>${escapeHtml(node.name || "Untitled node")}</strong>
-              <small>${meta.label}</small>
-            </span>
-          </header>
-          <p class="meta">${escapeHtml(node.prompt || meta.detail)}</p>
-          <footer>
-            <span class="tag">${node.retries} retr${node.retries === 1 ? "y" : "ies"}</span>
-            <span class="tag">${state.edges.filter((edge) => edge.from === node.id).length} out</span>
-            <span class="tag">${state.edges.filter((edge) => edge.to === node.id).length} in</span>
-          </footer>
-        `;
-        item.addEventListener("pointerdown", startDrag);
-        item.addEventListener("click", () => selectNode(node.id));
-        el.nodes.append(item);
-      });
-    }
-
-    function renderEdges(validation = validateGraph()) {
-      el.edges.innerHTML = "";
-      const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-      defs.innerHTML = `<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(155, 220, 90, .78)"></path></marker>`;
-      el.edges.append(defs);
-
-      state.edges.forEach((edge) => {
-        const from = state.nodes.find((node) => node.id === edge.from);
-        const to = state.nodes.find((node) => node.id === edge.to);
-        if (!from || !to) return;
-        const start = nodeCenter(from, "right");
-        const end = nodeCenter(to, "left");
-        const mid = Math.max(80, Math.abs(end.x - start.x) / 2);
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M ${start.x} ${start.y} C ${start.x + mid} ${start.y}, ${end.x - mid} ${end.y}, ${end.x} ${end.y}`);
-        path.setAttribute("class", validation.cycleIds.has(edge.from) && validation.cycleIds.has(edge.to) ? "edge-line invalid" : "edge-line");
-        path.setAttribute("marker-end", "url(#arrow)");
-        el.edges.append(path);
-      });
-    }
-
-    function renderInspector() {
-      const node = state.nodes.find((item) => item.id === state.selectedId);
-      el.inspectorEmpty.hidden = Boolean(node);
-      el.inspectorForm.hidden = !node;
-      if (!node) return;
-      el.nodeName.value = node.name;
-      el.nodeType.value = node.type;
-      el.nodePrompt.value = node.prompt;
-      el.nodeRetries.value = node.retries;
-    }
-
-    function renderEdgeList() {
-      el.edgeList.innerHTML = "";
-      if (state.edges.length === 0) {
-        el.edgeList.innerHTML = `<div class="empty">No edges yet. Use Connect, then pick a source and target node.</div>`;
-        return;
-      }
-      state.edges.forEach((edge, index) => {
-        const from = state.nodes.find((node) => node.id === edge.from);
-        const to = state.nodes.find((node) => node.id === edge.to);
-        const row = document.createElement("div");
-        row.className = "edge-row";
-        row.innerHTML = `<span>${escapeHtml(from?.name || "Missing")} -> ${escapeHtml(to?.name || "Missing")}</span>`;
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "danger";
-        button.textContent = "Remove";
-        button.addEventListener("click", () => removeEdge(index));
-        row.append(button);
-        el.edgeList.append(row);
-      });
-    }
-
-    function renderValidation(validation) {
-      el.validationList.innerHTML = "";
-      validation.messages.forEach((message) => {
-        const item = document.createElement("div");
-        item.className = `validation-item ${message.level}`;
-        item.textContent = message.text;
-        el.validationList.append(item);
-      });
-      if (validation.messages.length === 0) {
-        el.validationList.innerHTML = `<div class="empty">Validation will appear after nodes are added.</div>`;
-      }
-    }
-
-    function renderSavedList() {
-      const saved = readSaved();
-      el.savedList.innerHTML = "";
-      if (saved.length === 0) {
-        el.savedList.innerHTML = `<div class="empty">Saved valid graphs appear here.</div>`;
-        return;
-      }
-      saved.forEach((entry, index) => {
-        const row = document.createElement("div");
-        row.className = "saved-row";
-        row.innerHTML = `<strong>${escapeHtml(entry.name)}</strong><span class="meta">${entry.graph.nodes.length} nodes, ${entry.graph.edges.length} edges</span>`;
-        const actions = document.createElement("div");
-        actions.className = "saved-actions";
-        const load = document.createElement("button");
-        load.type = "button";
-        load.textContent = "Load";
-        load.addEventListener("click", () => importGraph(entry.graph));
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "danger";
-        remove.textContent = "Delete";
-        remove.addEventListener("click", () => {
-          const next = readSaved();
-          next.splice(index, 1);
-          localStorage.setItem(storageKey, JSON.stringify(next));
-          renderSavedList();
-        });
-        actions.append(load, remove);
-        row.append(actions);
-        el.savedList.append(row);
-      });
-    }
-
-    function render() {
-      const validation = validateGraph();
-      renderNodes();
-      renderEdges(validation);
-      renderInspector();
-      renderEdgeList();
-      renderValidation(validation);
-      renderSavedList();
-
-      el.nodeCount.textContent = `${state.nodes.length} node${state.nodes.length === 1 ? "" : "s"}`;
-      el.edgeCount.textContent = `${state.edges.length} edge${state.edges.length === 1 ? "" : "s"}`;
-      el.saveState.textContent = state.dirty ? "Unsaved" : "Saved";
-      el.saveState.className = `pill ${state.dirty ? "warn" : "ok"}`;
-      el.validationState.textContent = validation.valid ? "Valid DAG" : "Invalid";
-      el.validationState.className = `pill ${validation.valid ? "ok" : "bad"}`;
-      el.saveGraph.disabled = !validation.valid;
-      el.connectMode.textContent = state.connectMode ? "Connecting" : "Connect";
-      el.connectMode.className = state.connectMode ? "primary" : "";
-    }
-
-    function selectNode(id) {
-      if (state.connectMode) {
-        if (!state.connectFrom) {
-          state.connectFrom = id;
-        } else {
-          addEdge(state.connectFrom, id);
-          state.connectFrom = null;
-        }
-      }
-      state.selectedId = id;
-      render();
-    }
-
-    function startDrag(event) {
-      if (event.button !== 0) return;
-      const id = event.currentTarget.dataset.id;
-      const node = state.nodes.find((item) => item.id === id);
-      if (!node) return;
-      state.selectedId = id;
-      const start = { x: event.clientX, y: event.clientY, nodeX: node.x, nodeY: node.y };
-      event.currentTarget.setPointerCapture(event.pointerId);
-
-      function move(moveEvent) {
-        node.x = Math.max(20, start.nodeX + moveEvent.clientX - start.x);
-        node.y = Math.max(20, start.nodeY + moveEvent.clientY - start.y);
-        markDirty();
-        renderNodes();
-        renderEdges(validateGraph());
-      }
-
-      function done() {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", done);
-        render();
-      }
-
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", done);
-    }
-
-    function readSaved() {
-      try {
-        const parsed = JSON.parse(localStorage.getItem(storageKey) || "[]");
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-
-    function saveGraph() {
-      const validation = validateGraph();
-      if (!validation.valid) {
-        render();
-        return;
-      }
-      const name = state.nodes.find((node) => (state.edges.find((edge) => edge.from === node.id) || !state.edges.length))?.name || "Untitled DAG";
-      const saved = readSaved();
-      saved.unshift({
-        id: nextId("dag"),
-        name,
-        graph: exportGraph(),
-        savedAt: new Date().toISOString(),
-      });
-      localStorage.setItem(storageKey, JSON.stringify(saved.slice(0, 8)));
-      localStorage.removeItem(draftKey);
-      markDirty(false);
-      render();
+    function renderRows(id, items) {
+      document.getElementById(id).innerHTML = items.map((item) => `
+        <div class="row">
+          <strong>${escapeHtml(item.label)}</strong>
+          <span class="meta">${escapeHtml(item.detail)}</span>
+          <span class="pill ${stateClass(item.state)}">${escapeHtml(item.state)}</span>
+        </div>
+      `).join("");
     }
 
     function escapeHtml(value) {
       return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;");
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
-
-    function boot() {
-      renderPalette();
-      try {
-        const draft = JSON.parse(localStorage.getItem(draftKey) || "null");
-        if (draft?.nodes?.length) {
-          state.nodes = draft.nodes;
-          state.edges = draft.edges || [];
-          state.selectedId = state.nodes[0]?.id || null;
-        } else {
-          state.nodes = sampleGraph.nodes.map((node) => ({ ...node }));
-          state.edges = sampleGraph.edges.map((edge) => ({ ...edge }));
-          state.selectedId = state.nodes[0].id;
-        }
-      } catch {
-        state.nodes = sampleGraph.nodes.map((node) => ({ ...node }));
-        state.edges = sampleGraph.edges.map((edge) => ({ ...edge }));
-        state.selectedId = state.nodes[0].id;
-      }
-
-      el.connectMode.addEventListener("click", () => {
-        state.connectMode = !state.connectMode;
-        state.connectFrom = null;
-        render();
-      });
-      el.autoLayout.addEventListener("click", autoLayout);
-      el.saveGraph.addEventListener("click", saveGraph);
-      el.loadSample.addEventListener("click", () => importGraph(sampleGraph));
-      el.clearGraph.addEventListener("click", () => {
-        state.nodes = [];
-        state.edges = [];
-        state.selectedId = null;
-        markDirty();
-        render();
-      });
-      el.nodeName.addEventListener("input", () => updateSelected({ name: el.nodeName.value }));
-      el.nodeType.addEventListener("change", () => updateSelected({ type: el.nodeType.value }));
-      el.nodePrompt.addEventListener("input", () => updateSelected({ prompt: el.nodePrompt.value }));
-      el.nodeRetries.addEventListener("input", () => updateSelected({ retries: Number(el.nodeRetries.value) || 0 }));
-      el.duplicateNode.addEventListener("click", () => {
-        const node = state.nodes.find((item) => item.id === state.selectedId);
-        if (!node) return;
-        const duplicate = { ...node, id: nextId(), name: `${node.name} copy`, x: node.x + 40, y: node.y + 40 };
-        state.nodes.push(duplicate);
-        state.selectedId = duplicate.id;
-        markDirty();
-        render();
-      });
-      el.deleteNode.addEventListener("click", () => {
-        if (state.selectedId) deleteNode(state.selectedId);
-      });
-
-      render();
-    }
-
-    boot();
   </script>
 </body>
 </html>

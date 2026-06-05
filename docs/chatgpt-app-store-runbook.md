@@ -1,7 +1,7 @@
 # Goblintown ChatGPT App store runbook
 
-This runbook covers the end-to-end readiness checks for the ChatGPT App 1.0
-dev preview and the production Vercel-hosted adapter.
+This runbook covers the end-to-end readiness checks for the public ChatGPT App
+submission surface and the production Vercel-hosted adapter.
 
 ## Hosted mode (submission path)
 
@@ -11,16 +11,36 @@ dev preview and the production Vercel-hosted adapter.
 - MCP endpoint: `/mcp`
 - Health check: `/healthz`
 - Walkthrough: `/`
-- User dashboard placeholder: `/dashboard.html`
-- Operator admin placeholder: `/admin.html`
+- User dashboard: `/dashboard.html`
+- Operator admin: `/admin.html`
+- Submission readiness JSON: `/api/submission/readiness`
+
+## OpenAI Dashboard prerequisites
+
+Before submitting for public review, confirm these items outside the repo:
+
+- The publishing individual or business identity is verified in the OpenAI
+  Platform Dashboard under the public name used for Goblintown.
+- The submitting user has `api.apps.write`; anyone checking draft or review
+  status has `api.apps.read`.
+- The submitted MCP URL is the universal hosted endpoint:
+  `https://goblintown-mcp.vercel.app/mcp`.
+- The submission is intended for public distribution. Private/internal testing
+  should stay in ChatGPT Developer Mode.
 
 ## Required artifacts
 
 - `chatgpt-app-submission.json`
 - Adapter health and MCP endpoints at `/healthz`, `/mcp`
+- Launch-readiness JSON at `/api/submission/readiness`
+- Reviewer-safe dashboard/admin pages:
+  - `/dashboard.html`
+  - `/admin.html`
 - Site pages for privacy and terms:
   - `/privacy.html`
   - `/terms.html`
+- Release note:
+  - `docs/chatgpt-app-store-release-notes.md`
 
 ## Pre-flight automated checks
 
@@ -43,7 +63,8 @@ If all three checks pass, the hosted surface includes:
 - Health response with the expected MCP URL
 - `GET /mcp` method protections
 - Tank widget resource and required tool list
-- Site placeholders for dashboard/admin and legal pages
+- Submission readiness JSON with token policy and local-only boundaries
+- Reviewer-safe dashboard/admin and legal pages
 - Sidecar bootstrap + plugin/skill command discoverability
 
 ## Local development mode
@@ -110,11 +131,23 @@ This flow can be used for human QA and store reviewer walkthrough.
 
 5. **Settings / surface visibility**
    - Open:
-     - `/dashboard.html` and confirm placeholder text for user dashboard.
-     - `/admin.html` and confirm placeholder text for operator admin.
+     - `/dashboard.html` and confirm launch readiness, run history/artifact
+       evidence, reviewer prompts, and boundary sections render.
+     - `/admin.html` and confirm control readiness renders without operator
+       authentication, while duty-board controls stay locked until configured.
    - Confirm `/privacy.html` and `/terms.html` are linked from the landing page.
 
-6. **Logout / closeout**
+6. **Evidence capture**
+   - Capture screenshots or a short video showing:
+     - ChatGPT Developer Mode connected to
+       `https://goblintown-mcp.vercel.app/mcp`.
+     - `goblintown_tank` returning the hosted handoff/widget surface.
+     - `goblintown_plan` returning a ChatGPT-hosted planner packet.
+     - `goblintown_doctor` returning readiness without secret values.
+     - `/dashboard.html`, `/admin.html`, `/privacy.html`, and `/terms.html`.
+     - The MCP server removed or disconnected after review.
+
+7. **Logout / closeout**
    - Remove or disconnect the MCP server in ChatGPT after test completes.
    - Re-run:
 
@@ -129,6 +162,8 @@ This flow can be used for human QA and store reviewer walkthrough.
 - [ ] `verify:chatgpt` passes
 - [ ] `verify:vercel` passes
 - [ ] `verify:smoke` passes
+- [ ] `/api/submission/readiness` reports the hosted MCP URL and no-key token policy
 - [ ] Manual checklist above completed
+- [ ] Screenshot or video evidence captured
 - [ ] No unresolved placeholders in manifest/tooling coverage
 - [ ] Release notes and distribution docs describe ChatGPT App as a first-class path

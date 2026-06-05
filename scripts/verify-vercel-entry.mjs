@@ -46,6 +46,26 @@ try {
   assert.equal(termsPage.status, 200);
   assert.match(await termsPage.text(), /Terms of Service/);
 
+  const dashboardPage = await fetch(`${localBaseUrl}/dashboard.html`);
+  assert.equal(dashboardPage.status, 200);
+  const dashboardHtml = await dashboardPage.text();
+  assert.match(dashboardHtml, /Launch dashboard/);
+  assert.match(dashboardHtml, /Run History And Artifacts/);
+
+  const adminPage = await fetch(`${localBaseUrl}/admin.html`);
+  assert.equal(adminPage.status, 200);
+  const adminHtml = await adminPage.text();
+  assert.match(adminHtml, /Operator admin/);
+  assert.match(adminHtml, /Control readiness/);
+
+  const readiness = await fetch(`${localBaseUrl}/api/submission/readiness`).then((res) => res.json());
+  assert.equal(readiness.ok, true);
+  assert.equal(readiness.hosted, true);
+  assert.equal(readiness.universalMcpUrl, "https://goblintown-mcp.vercel.app/mcp");
+  assert.equal(readiness.currentMcpUrl, "https://goblintown-mcp.vercel.app/mcp");
+  assert.equal(readiness.tokenPolicy?.openAiApiKeyRequired, false);
+  assert.ok(readiness.boundaries?.some((entry) => /rejects local_provider/i.test(entry)));
+
   const client = new Client(
     { name: "goblintown-vercel-entry-verifier", version: "0.0.0" },
     { capabilities: {} },

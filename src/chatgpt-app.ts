@@ -31,6 +31,41 @@ import {
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SITE_DIR = join(MODULE_DIR, "..", "site");
+const CANONICAL_HOSTED_BASE_URL = "https://goblintown-mcp.vercel.app";
+
+type ReadinessState = "ready" | "bounded" | "local_only" | "manual";
+
+interface LaunchReadinessItem {
+  key: string;
+  label: string;
+  state: ReadinessState;
+  detail: string;
+}
+
+interface ChatGptLaunchReadiness {
+  ok: true;
+  app: string;
+  version: string;
+  hosted: boolean;
+  publicBaseUrl: string;
+  universalMcpUrl: string;
+  currentMcpUrl: string;
+  widgetUri: string;
+  tokenPolicy: {
+    defaultRunner: "chatgpt_host";
+    openAiApiKeyRequired: false;
+    localProviderSpend: string;
+  };
+  reviewerSurfaces: Array<{
+    path: string;
+    label: string;
+    state: ReadinessState;
+    detail: string;
+  }>;
+  controls: LaunchReadinessItem[];
+  evidence: LaunchReadinessItem[];
+  boundaries: string[];
+}
 
 export interface GoblintownChatGptAppOptions {
   cwd?: string;
@@ -244,6 +279,23 @@ export function createGoblintownChatGptExpressApp(
     sendSitePage(res, "admin.html");
   });
 
+  app.get("/api/submission/readiness", (req, res) => {
+    res.json(buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode));
+  });
+
+  app.get("/api/dashboard/readiness", (req, res) => {
+    res.json(buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode));
+  });
+
+  app.get("/api/admin/readiness", (req, res) => {
+    res.json({
+      ...buildChatGptLaunchReadiness(resolveBaseUrl(req), !!opts.hostedMode),
+      authenticated: !!getOperatorSession(req),
+      passwordConfigured: operatorPasswordConfigured(),
+      githubConfigured: githubOperatorAuthConfigured(),
+    });
+  });
+
   app.get("/api/admin/auth/status", (req, res) => {
     const session = getOperatorSession(req);
     res.json({
@@ -328,6 +380,7 @@ export function createGoblintownChatGptExpressApp(
 
   app.get("/healthz", (req, res) => {
     const currentBaseUrl = resolveBaseUrl(req);
+    const readiness = buildChatGptLaunchReadiness(currentBaseUrl, !!opts.hostedMode);
     res.json({
       ok: true,
       name: "Goblintown ChatGPT App",
@@ -335,6 +388,10 @@ export function createGoblintownChatGptExpressApp(
       mode: opts.hostedMode ? "hosted" : "local",
       mcpUrl: `${currentBaseUrl}/mcp`,
       widgetUri: GOBLINTOWN_CHATGPT_WIDGET_URI,
+      submissionReadinessUrl: `${currentBaseUrl}/api/submission/readiness`,
+      dashboardUrl: `${currentBaseUrl}/dashboard.html`,
+      adminUrl: `${currentBaseUrl}/admin.html`,
+      tokenPolicy: readiness.tokenPolicy,
       tools: buildGoblintownMcpTools({
         chatgptApp: true,
         hostedApp: opts.hostedMode,
@@ -427,6 +484,133 @@ export function createGoblintownChatGptExpressApp(
       if (baseUrl) addAllowedHost(baseUrl);
     },
     addAllowedHost,
+  };
+}
+
+function buildChatGptLaunchReadiness(baseUrl: string, hosted: boolean): ChatGptLaunchReadiness {
+  const currentMcpUrl = `${baseUrl}/mcp`;
+  const universalMcpUrl = `${CANONICAL_HOSTED_BASE_URL}/mcp`;
+  return {
+    ok: true,
+    app: "Goblintown ChatGPT App",
+    version: "1.0",
+    hosted,
+    publicBaseUrl: baseUrl,
+    universalMcpUrl,
+    currentMcpUrl,
+    widgetUri: GOBLINTOWN_CHATGPT_WIDGET_URI,
+    tokenPolicy: {
+      defaultRunner: "chatgpt_host",
+      openAiApiKeyRequired: false,
+      localProviderSpend: hosted
+        ? "disabled on the hosted endpoint"
+        : "available only when the local adapter receives an explicit local_provider request",
+    },
+    reviewerSurfaces: [
+      {
+        path: "/",
+        label: "Hosted handoff page",
+        state: "ready",
+        detail: "Shows the MCP URL, legal links, and ChatGPT Developer Mode connection target.",
+      },
+      {
+        path: "/dashboard.html",
+        label: "User dashboard",
+        state: "ready",
+        detail: "Shows reviewer-safe run history, artifact evidence, and rerun prompts without claiming cloud account storage.",
+      },
+      {
+        path: "/admin.html",
+        label: "Operator admin",
+        state: "bounded",
+        detail: "Shows authenticated duty controls when configured and public launch-readiness controls otherwise.",
+      },
+      {
+        path: "/privacy.html",
+        label: "Privacy policy",
+        state: "ready",
+        detail: "Documents hosted, Codex, local Tank, provider, and retention boundaries.",
+      },
+      {
+        path: "/terms.html",
+        label: "Terms of service",
+        state: "ready",
+        detail: "Documents review, provider spend, local data, and host/provider responsibilities.",
+      },
+    ],
+    controls: [
+      {
+        key: "provider_model_routing",
+        label: "Provider and model routing",
+        state: hosted ? "bounded" : "ready",
+        detail: hosted
+          ? "Hosted ChatGPT mode always returns ChatGPT-host board packets and does not spend local/provider tokens."
+          : "Local adapter can inspect provider routes and can opt into local_provider execution explicitly.",
+      },
+      {
+        key: "memory_retention",
+        label: "Memory and artifact retention",
+        state: "bounded",
+        detail: "Hosted mode returns structured packets only; persistent Hoard artifacts, imported chats, and embeddings remain local-only.",
+      },
+      {
+        key: "account_session",
+        label: "Account and session controls",
+        state: "bounded",
+        detail: "Public reviewer pages do not require a user account. Operator GitHub/password auth is available only when configured.",
+      },
+      {
+        key: "specialist_thresholds",
+        label: "Specialist and fallback thresholds",
+        state: "ready",
+        detail: "goblintown_rite and goblintown_plan expose pack size, specialist cap, fallback, debate, and node limits as explicit tool inputs.",
+      },
+      {
+        key: "run_history_artifacts",
+        label: "Run history and artifact details",
+        state: "bounded",
+        detail: "Dashboard shows reviewer evidence and prompts for reruns; durable local run history remains in the local Tank and CLI.",
+      },
+    ],
+    evidence: [
+      {
+        key: "build",
+        label: "Build",
+        state: "manual",
+        detail: "Run npm run build before submission.",
+      },
+      {
+        key: "vercel",
+        label: "Vercel hosted adapter check",
+        state: "manual",
+        detail: "Run npm run verify:vercel to prove the hosted entry exports the expected MCP surface.",
+      },
+      {
+        key: "chatgpt_hosted",
+        label: "Hosted MCP check",
+        state: "manual",
+        detail: `Run npm run verify:chatgpt:hosted against ${universalMcpUrl}.`,
+      },
+      {
+        key: "smoke",
+        label: "Package smoke gate",
+        state: "manual",
+        detail: "Run npm run verify:smoke to check sidecar bootstrap, plugin, skill, and MCP install discoverability.",
+      },
+      {
+        key: "reviewer_walkthrough",
+        label: "Manual reviewer walkthrough",
+        state: "manual",
+        detail: "Record Developer Mode connect, tank, plan, doctor, legal links, and disconnect evidence.",
+      },
+    ],
+    boundaries: [
+      "Hosted ChatGPT mode does not require OPENAI_API_KEY.",
+      "Hosted ChatGPT mode rejects local_provider Tank execution.",
+      "The public endpoint does not read private local files unless the user runs a local adapter and asks for local context.",
+      "Provider keys, persistent Hoard storage, imported chats, and local run history stay on the local adapter path.",
+      "The public reviewer dashboard and admin pages are launch surfaces, not cloud account storage claims.",
+    ],
   };
 }
 
