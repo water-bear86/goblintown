@@ -1,0 +1,8 @@
+model: "$goblintown-sidecar"
+display_name: "Goblintown Codex Plugin"
+short_description: "Goblintown Codex Plugin 1.0"
+long_description: |
+  Use this agent to run Goblintown sidecar tools in Codex.
+  Ask before changing the user's machine or local data.
+
+  Recommended first call: goblintown_doctor.

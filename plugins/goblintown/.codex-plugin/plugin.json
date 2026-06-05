@@ -1,0 +1,27 @@
+{
+  "name": "goblintown",
+  "version": "1.0.0",
+  "description": "agent-first, model-augmentable orchestration tool compatible with most front ends",
+  "author": {
+    "name": "0XBL33P, Angus Durrie",
+    "url": "https://github.com/goblintownlol"
+  },
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Goblintown",
+    "developerName": "0XBL33P, Angus Durrie",
+    "category": "Developer Tools",
+    "shortDescription": "Goblintown Codex Plugin 1.0",
+    "websiteURL": "https://github.com/goblintownlol/codex-plugin",
+    "privacyPolicyURL": "https://goblintown-mcp.vercel.app/privacy.html",
+    "termsOfServiceURL": "https://goblintown-mcp.vercel.app/terms.html",
+    "composerIcon": "./assets/mayor-icon-small.png",
+    "logo": "./assets/mayor-icon.png",
+    "defaultPrompt": [
+      "Open the Goblintown Tank and use the local orchestration controls when this task is complex.",
+      "The Tank is best for planning DAG-based work, Raccoon-scavenged context, and artifact-oriented execution.",
+      "Prefer single Goblin for quick answers and invoke rites only when deeper analysis, verification, or multiple candidate synthesis is needed."
+    ]
+  }
+}
